@@ -750,9 +750,9 @@ void load_ticker(char *ticker)
 
 	vol = average_volume(data, rows);
 	if (find_divergence)
-		diverge(tickers[x], data, rows);
+		diverge(ticker, data, rows);
 	else if (find_tails)
-		tails(tickers[x], data, rows);
+		tails(ticker, data, rows);
 	else if (vol > 1000000)
 		analyze(ticker, data, rows);
 	else if (verbose)
@@ -880,6 +880,8 @@ struct stock *make_weekly(struct stock *data, long rows, long *w_rows)
 /* Print our analysis of the stock */
 void diverge(char *ticker, struct stock *data, long rows)
 {
+	const char *debug_modes[] = {"IGNORED", "HIGHER HIGH", "LOWER HIGH", "HIGHER LOW", "LOWER LOW"};
+
 	moving_average_convergence_divergence macd;
 	relative_strength_index rsi;
 	simple_moving_average sma;
@@ -959,7 +961,11 @@ void diverge(char *ticker, struct stock *data, long rows)
 		if (((d_stock == HIGHERHIGH) && (d_rsi == LOWERHIGH) && (d_macd == LOWERHIGH) && (d_macd_h == LOWERHIGH)) ||
 	    	    ((d_stock == LOWERLOW) && (d_rsi == HIGHERLOW) && (d_macd == HIGHERLOW) && (d_macd_h == HIGHERLOW)))
 			printf("%s is in triple divergence (RSI, MACD, MACD histogram)!\n", ticker);
+		else if (verbose)
+			printf("Stock: %s, RSI: %s, MACD: %s, Histogram: %s\n", debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
 	}
+	else if (verbose)
+		printf("Stock: %s, RSI: %s, MACD: %s, Histogram: %s\n", debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
 
 	if (macd_h)
 		free(macd_h);
