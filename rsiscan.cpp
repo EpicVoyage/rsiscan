@@ -374,7 +374,12 @@ char *load_from_file(char *ticker)
 	sprintf(filename, "%s/%s.csv", config_dir, tkr);
 
 	if (stat(filename, &buf))
+	{
+		if (verbose)
+			printf("Unable to load %s from file: %s\n", ticker, filename);
+
 		return NULL;
+	}
 
 	re = fopen(filename, "r");
 	tmp = (char *)malloc(2048);
@@ -691,7 +696,10 @@ void update_tickers()
 
 			tmp = file->d_name;
 			while ((*tmp != '\0') && (*tmp != '.'))
-				*tmp++ = toupper(*tmp);
+			{
+				*tmp = toupper(*tmp);
+				*tmp++;
+			}
 			*tmp = 0;
 
 			ticker_count++;
@@ -705,6 +713,9 @@ void update_tickers()
 
 	if (intraday)
 		download_intraday_data();
+
+	if (verbose)
+		printf("%li tickers loaded.\n", ticker_count);
 
 	for (x = 0; x <= ticker_count; x++)
 		load_ticker(tickers[x]);
@@ -723,8 +734,15 @@ void load_ticker(char *ticker)
 	time_t from;
 
 	if ((block = load_from_file(ticker)) == NULL)
+	{
 		if ((block = download_eod_data(ticker, 0)) == NULL)
+		{
+			if (verbose)
+				printf("Unable to load %s from server. Giving up.\n", ticker);
+
 			return;
+		}
+	}
 
 	len = strlen(block);
 	data = csv.parse(block, (long *)&rows);
