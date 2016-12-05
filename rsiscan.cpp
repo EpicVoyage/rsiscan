@@ -56,10 +56,14 @@
 #       include <time.h>
 #endif
 
+#define IGNORED 0
 #define HIGHERHIGH 1
 #define LOWERHIGH 2
 #define HIGHERLOW 3
 #define LOWERLOW 4
+
+#define UP 0
+#define DOWN 1
 
 /* "Custom" data types */
 enum server {yahoo = 0, google = 1, invest = 2};
@@ -103,14 +107,14 @@ time_t get_last_date(struct stock *data, long rows);
 long average_volume(struct stock *data, long rows, long n = 10);
 struct stock *make_weekly(struct stock *data, long rows, long *w_rows);
 struct stock *stock_bump_day(struct stock *data, long rows, long *w_rows);
-void diverge(char *ticker, struct stock *data, long rows, const char *desc);
+bool diverge(char *ticker, struct stock *data, long rows, const char *desc);
 double *stock_reduce_close(struct stock *data, long rows);
 void tails(char *ticker, struct stock *data, long rows);
-void bbands_narrow(char *ticker, struct stock *data, long rows);
+bool bbands_narrow(char *ticker, struct stock *data, long rows);
 void low52wk(char *ticker, struct stock *data, long rows);
 void test_screener(char *ticker, struct stock *data, long rows);
 void analyze(char *ticker, struct stock *data, long rows);
-int divergence(double *values, long rows, long reset_high, long reset_low, long *pos);
+int divergence(double *values, long rows, long reset_high, long reset_low, long *pos = NULL);
 bool chart_patterns(struct stock *data, long rows, bool print, const char *period);
 
 /* Global variables */
@@ -703,9 +707,14 @@ void recursive_free(struct stock *data, long rows)
  * Call load_ticker() for each stock locally cached */
 void update_tickers()
 {
+	long x, pos, position, rows = 0, weekly_rows = 0, all_rows = 0, vol = 0, distance1, distance2;
 	struct stock *data = NULL, *weekly_data = NULL, *all_data = NULL;
-	long x, rows = 0, weekly_rows = 0, all_rows = 0, vol = 0;
+	bool diverge_daily, diverge_weekly, found_setup, cont;
+	int direction1, direction2;
+	double movement1, movement2;
+	simple_moving_average sma;
 	struct dirent *file;
+	double *sma5 = NULL;
 	DIR *saved;
 	char *tmp;
 
@@ -755,25 +764,36 @@ void update_tickers()
 		// If we loaded data...
 		if (rows)
 		{
+			if (walk_back)
+			{
+				sma5 = sma.generate(data, rows, 5, rows - 11);
+			}
+
 			// Review the data.
 			do {
+				found_setup = false;
 				if (walk_back && verbose)
 					printf("**%s**\n", data[0].date);
 
 				vol = average_volume(data, rows);
 				if (find_divergence)
 				{
-					diverge(tickers[x], data, rows, "daily");
+					diverge_daily = diverge(tickers[x], data, rows, "daily");
 
 					weekly_data = make_weekly(data, rows, &weekly_rows);
-					diverge(tickers[x], weekly_data, weekly_rows, "weekly");
+					diverge_weekly = diverge(tickers[x], weekly_data, weekly_rows, "weekly");
+					free(weekly_data);
+
+					found_setup = (diverge_daily || diverge_weekly);
+					if (diverge_daily && diverge_weekly)
+						printf("\n%s, %s: Daily and Weekly triple divergence!\n\n", data[0].date, tickers[x]);
 				}
 				else if (find_tails)
 					tails(tickers[x], data, rows);
 				else if (low52)
 					low52wk(tickers[x], data, rows);
 				else if (narrow_bbands)
-					bbands_narrow(tickers[x], data, rows);
+					found_setup = bbands_narrow(tickers[x], data, rows);
 				else if (test)
 					test_screener(tickers[x], data, rows);
 				else if (vol > 1000000)
@@ -781,15 +801,73 @@ void update_tickers()
 				else if (verbose)
 					printf("%s, %s: volume = %li\n", data[0].date, tickers[x], vol);
 
-				// TODO: There are more efficient ways to do this than to re-run the full test for every day.
+				// TODO?: There are more efficient ways to do this than to re-run the full test for every day.
 				if (walk_back && (rows > 100))
 				{
-					// TODO: Determine follow-up movement?
+					// Determine follow-up movement.
+					if (found_setup)
+					{
+						// TODO: Weak direction comparison.
+						position = pos = all_rows - rows;
+						if (position > 3)
+						{
+							direction1 = ((sma5[pos] > sma5[pos - 1]) || ((sma5[pos] == sma5[pos - 1]) && (sma5[pos - 1] == sma5[pos - 2]))) ? DOWN : UP;
+							distance1 = 0;
+							movement1 = 0;
+							do
+							{
+								pos--;
+								if (direction1 == UP)
+								{
+									if (all_data[pos].close - all_data[position].close > movement1)
+										movement1 = all_data[pos].close - all_data[position].close;
+									cont = (sma5[pos - 1] >= sma5[pos]);
+								}
+								else
+								{
+									if (all_data[position].close - all_data[pos].close < movement1)
+										movement1 = all_data[pos].close - all_data[position].close;
+									cont = (sma5[pos] >= sma5[pos - 1]);
+								}
+								//printf("%s (%s vs. %s): %.02f (%li), %.02f (%li), %.02f\n", direction1 == UP ? "UP" : "DOWN", all_data[position].date, all_data[pos].date, all_data[position].close, position, all_data[pos].close, pos, movement1);
+								distance1++;
+							} while ((pos > 1) && cont);
+							//for (distance1 = 1; (pos > 1) && (sma5[pos] >= sma5[pos -  1]); pos--);
+							direction2 = (direction1 == UP) ? DOWN : UP;
+							distance2 = 0;
+							movement2 = 0;
+							position = pos;
+							cont = true;
+							pos--;
+							for (; (pos > 1) && cont; pos--)
+							{
+								if (direction2 == UP)
+								{
+									if (all_data[pos].close - all_data[position].close > movement2)
+										movement2 = all_data[pos].close - all_data[position].close;
+									cont = (sma5[pos - 1] >= sma5[pos]);
+								}
+								else
+								{
+									if (all_data[pos].close - all_data[position].close < movement2)
+										movement2 = all_data[pos].close - all_data[position].close;
+									cont = (sma5[pos] >= sma5[pos - 1]);
+								}
+								//printf("%s (%s vs. %s): %.02f (%li), %.02f (%li), %.02f\n", direction2 == UP ? "UP" : "DOWN", all_data[position].date, all_data[pos].date, all_data[position].close, position, all_data[pos].close, pos, movement2);
+								distance2++;
+							}
+
+							printf("    Follow-up: %s for %li (%+.02f); %s for %li (%+.02f)\n\n", (direction1 == UP ? "UP" : "DOWN"), distance1, movement1, (direction2 == UP ? "UP" : "DOWN"), distance2, movement2);
+						}
+					}
+
 					data = stock_bump_day(data, rows, &rows);
 				}
 			} while (walk_back && data && (rows > 100));
 
 			// Clean up.
+			if (sma5)
+				free(sma5);
 			recursive_free(all_data, all_rows);
 		}
 		else
@@ -976,19 +1054,6 @@ struct stock *stock_bump_day(struct stock *data, long rows, long *w_rows)
 	if (rows < 1)
 		return NULL;
 
-	/*ret = (struct stock *)malloc(rows * sizeof(struct stock));
-
-	for (x = 1; x < rows; x++)
-	{
-		ret[*w_rows].date = data[x].date;
-		ret[*w_rows].open = data[x].open;
-		ret[*w_rows].high = data[x].high;
-		ret[*w_rows].low = data[x].low;
-		ret[*w_rows].close = data[x].close;
-		ret[*w_rows].volume = data[x].volume;
-		(*w_rows)++;
-	}*/
-
 	ret = data + 1;
 	*w_rows = (rows - 1);
 	return ret;
@@ -1017,8 +1082,14 @@ double *stock_reduce_close(struct stock *data, long rows) {
 
 /**
  * Try to find triple divergences, as defined by Chris Verheigh (The Option Trainer).
+ *
+ * TODO: Generate a list of highs/lows from BB resets, then compare their placement to each other. The
+ * code currently finds "divergences" of different indicators at different locations - which means they
+ * aren't really divergences.
+ *
+ * TODO: We need a strength indicator.
  */
-void diverge(char *ticker, struct stock *data, long rows, const char *desc)
+bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 {
 	const char *debug_modes[] = {"IGNORED", "HIGHER HIGH", "LOWER HIGH", "HIGHER LOW", "LOWER LOW"};
 
@@ -1026,16 +1097,39 @@ void diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	relative_strength_index rsi;
 	simple_moving_average sma;
 	bollinger bb;
+	bool is_uptrend, is_diverging = false;
 	double *stock_close = NULL, *sma_weekly = NULL, *sma_data = NULL, *bb_data = NULL, *rsi_data = NULL, *macd_data = NULL, *macd_h = NULL;
-	long reset_h = 0, reset_l = 0, x;
+	long trend_change = 0, reset_h = 0, reset_l = 0, found_divergence = 0, x;
 	int d_stock, d_rsi, d_macd, d_macd_h;
 
-	//sma_weekly = sma.generate(data, rows, 5, rows - 26);
+	//sma_weekly = sma.generate(data, rows, 5, rows - 11);
 	sma_data = sma.generate(data, rows, 20, rows - 26);
 	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
 
+	// Find the current "trend" - "up" or "down."
+	x = 0;
+	do
+	{
+		x++;
+		is_uptrend = (sma_data[x] > sma_data[x-1]);
+	} while (sma_data[x] == sma_data[x-1]);
+
+	for (; x < rows; x++)
+	{
+		// If the SMA trend direction changed.
+		if (is_uptrend ? (sma_data[x - 1] > sma_data[x]) : (sma_data[x] > sma_data[x - 1]))
+		{
+			trend_change = x;
+			break;
+		}
+	}
+
+	// We can use shorter values, but 1-3 are almost useless.
+	if (trend_change > 5)
+		trend_change = 5;
+
 	// Prices outside the Bollinger Bands reset are reset points for our "high" and "low" patterns. I think CV said to do this sometime.
-	for (x = 0; x < rows; x++)
+	for (x = trend_change; x < rows; x++)
 	{
 		if ((reset_h == 0) && (data[x].close > sma_data[x] + bb_data[x]))
 			reset_h = x;
@@ -1053,18 +1147,18 @@ void diverge(char *ticker, struct stock *data, long rows, const char *desc)
 
 	// rsi trend
 	d_rsi = 0;
-	if (d_stock)
+	if ((d_stock == HIGHERHIGH) || (d_stock == LOWERLOW))
 	{
 		rsi_data = rsi.generate(data, rows, 14, rows - 26);
-		d_rsi = divergence(rsi_data, rows - 26, reset_h, reset_l, NULL);
+		d_rsi = divergence(rsi_data, rows - 26, reset_h, reset_l, &found_divergence);
 	}
 
 	// MACD trend
 	d_macd = 0;
-	if (d_rsi)
+	if (d_rsi && found_divergence)
 	{
 		macd_data = macd.generate(data, rows, 12, 26, rows - 26);
-		d_macd = divergence(macd_data, rows - 26, reset_h, reset_l, NULL);
+		d_macd = divergence(macd_data, rows - 26, reset_h, reset_l, &found_divergence);
 	}
 
 	// MACD histogram trend
@@ -1072,7 +1166,7 @@ void diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	if (d_macd)
 	{
 		macd_h = macd.histogram(data, rows, 12, 26, 9, rows - 26);
-		d_macd_h = divergence(macd_h, rows - 26, reset_h, reset_l, NULL);
+		d_macd_h = divergence(macd_h, rows - 26, reset_h, reset_l, &found_divergence);
 	}
 
 	// Look for the divergence.
@@ -1080,11 +1174,15 @@ void diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	{
 		if (((d_stock == HIGHERHIGH) && (d_rsi == LOWERHIGH) && (d_macd == LOWERHIGH) && (d_macd_h == LOWERHIGH)) ||
 	    	    ((d_stock == LOWERLOW) && (d_rsi == HIGHERLOW) && (d_macd == HIGHERLOW) && (d_macd_h == HIGHERLOW)))
-			printf("%s, %s is in %s triple divergence (Stock: %s, RSI: %.02f, %.02f, %s; MACD: %.02f, %.02f, %s; MACD histogram: %.02f, %.02f, %s; since high: %li, since low: %li)!\n", data[0].date, ticker, desc, debug_modes[d_stock],
-					rsi_data[(d_rsi == HIGHERHIGH || d_rsi == HIGHERLOW) ? reset_h : reset_l], *rsi_data, debug_modes[d_rsi],
-					macd_data[(d_macd == HIGHERHIGH || d_macd == HIGHERLOW) ? reset_h : reset_l], *macd_data, debug_modes[d_macd],
-					macd_h[(d_macd_h == HIGHERHIGH || d_macd_h == HIGHERLOW) ? reset_h : reset_l], *macd_h, debug_modes[d_macd_h],
-					reset_h, reset_l);
+		{
+			printf("%s, %s is in \033[%im%s\033[0m triple divergence\n", data[0].date, ticker, (strncmp(desc, "weekly", 6) == 0) ? 31 : 32, desc);
+			printf("    \033[%im%s\033[0m; Distance: %li, %s; %.02f, %.02f; RSI: %.02f, %.02f, %s; MACD: %.02f, %.02f, %s; MACD histogram: %.02f, %.02f, %s; high reset: %li/%s, low reset: %li/%s; Volume: %li!\n\n", (d_stock == HIGHERHIGH) ? 31 : 32, debug_modes[d_stock], found_divergence, data[found_divergence].date, stock_close[found_divergence], *stock_close,
+					rsi_data[found_divergence], *rsi_data, debug_modes[d_rsi],
+					macd_data[found_divergence], *macd_data, debug_modes[d_macd],
+					macd_h[found_divergence], *macd_h, debug_modes[d_macd_h],
+					reset_h, data[reset_h].date, reset_l, data[reset_l].date, data[0].volume);
+			is_diverging = true;
+		}
 		else if (verbose)
 			printf("%s, Stock: %s/%s, RSI: %s, MACD: %s, Histogram: %s\n", data[0].date, ticker, debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
 	}
@@ -1104,7 +1202,7 @@ void diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	if (bb_data)
 		free(bb_data);
 
-	return;
+	return is_diverging;
 }
 
 /**
@@ -1161,12 +1259,13 @@ void tails(char *ticker, struct stock *data, long rows)
 /**
  * Narrow bollinger bands.
  */
-void bbands_narrow(char *ticker, struct stock *data, long rows)
+bool bbands_narrow(char *ticker, struct stock *data, long rows)
 {
 	simple_moving_average sma;
 	bollinger bb;
 	double *sma_data = NULL, *bb_data = NULL, narrowest = NULL, widest = NULL;
-	long x;
+	bool in_bands, ret = false;
+	long days_in_bands, x;
 
 	sma_data = sma.generate(data, rows, 20, rows - 26);
 	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
@@ -1176,30 +1275,42 @@ void bbands_narrow(char *ticker, struct stock *data, long rows)
 	{
 		if (verbose)
 			printf("%s, %s: Ignored for low volume.\n", data[0].date, ticker);
-		return;
+		return ret;
 	}
 
 	if (!sma_data || !sma_data[0])
 	{
 		if (verbose)
 			printf("%s, %s: Ignored because we have no SMA.\n", data[0].date, ticker);
-		return;
+		return ret;
 	}
 
 	// TODO: 252 = 2014's trading days.
 	widest = narrowest = bb_data[0];
+	in_bands = true;
+	days_in_bands = 0;
 	for (x = 0; (x < 252) && (x < rows); x++)
 	{
 		if (bb_data[x] < narrowest)
 			narrowest = bb_data[x];
 		else if (bb_data[x] > widest)
 			widest = bb_data[x];
+
+		//printf("%.02f, %.02f. %.02f\n", sma_data[x], bb_data[x], data[x].close);
+		if (in_bands && (sma_data[x] + bb_data[x] > data[x].close) && (data[x].close > sma_data[x] - bb_data[x]))
+			days_in_bands++;
+		else
+			in_bands = false;
 	}
 
-	if (bb_data[0] < (narrowest * 1.15))
+	ret = (bb_data[0] < (narrowest * 1.15));
+
+	if (ret)
 	{
-		printf("%s, %s: Narrow bands (Close: %.02f, Width: %.02f, Narrowest: %.02f, Widest: %.02f).\n", data[0].date, ticker, data[0].close, bb_data[0], narrowest, widest);
+		printf("%s, \033[%im%s\033[0m: Narrow bands (In Bands: %li, Close: %.02f, Width: %.02f, Narrowest: %.02f, Widest: %.02f).\n", data[0].date, (days_in_bands > 20) ? 32 : 0, ticker, days_in_bands, data[0].close, bb_data[0], narrowest, widest);
 	}
+
+	return ret;
 }
 
 /**
@@ -1344,45 +1455,62 @@ void analyze(char *ticker, struct stock *data, long rows)
 	return;
 }
 
+/**
+ * Trend: Determine whether the current value (values[0]) is a Higher High, Lower High, Higher Low, or Lower Low.
+ *
+ * @param values The values to check against each other.
+ * @param rows The number of values we have.
+ * @param reset_high How far back do we go before we stop checking for additional highs?
+ * @param reset_low How far back do we go before we stop checking for additional lows?
+ * @param pos - NULL => Ignored. 0 => Return location we found. +/- => Try to find a divergence near pos.
+ */
 int divergence(double *values, long rows, long reset_high, long reset_low, long *pos)
 {
-	int ret = 0;
-	long x, high = 0;
+	int ret = IGNORED;
+	bool matches_direction;
+	long x, start, stop, found = 0;
 
 	if ((rows < 3) || (rows <= reset_high) || (rows <= reset_low))
 		return ret;
 
+	// Find highs.
 	if ((reset_low > 0) && (values[0] > values[1]) && (values[0] > values[2]))
 	{
 		ret = HIGHERHIGH;
-		for (x = 1; x < reset_low; x++)
+		start = (pos && *pos) ? *pos - 1 : 2;
+		stop = (pos && *pos) ? *pos + 2 : reset_low;
+		for (x = start; x < stop; x++)
 		{
-			if (values[x] > values[high])
+			matches_direction = true; //((values[0] < 0) && (values[x] < 0)) || ((values[0] > 0) && (values[x] > 0));
+			if (values[x] > values[found] && matches_direction)
 			{
 				ret = LOWERHIGH;
-				high = x;
-				if (!pos)
-					break;
+				found = x;
+				break;
 			}
 		}
 	}
+
+	// Find lows.
 	else if ((reset_high > 0) && (values[0] < values[1]) && (values[0] < values[2]))
 	{
 		ret = LOWERLOW;
-		for (x = 1; x < reset_high; x++)
+		start = (pos && *pos) ? *pos - 1 : 2;
+		stop = (pos && *pos) ? *pos + 2 : reset_high;
+		for (x = start; x < stop; x++)
 		{
-			if (values[x] < values[high])
+			matches_direction = true; //((values[0] < 0) && (values[x] < 0)) || ((values[0] > 0) && (values[x] > 0));
+			if ((values[x] < values[found]) && matches_direction)
 			{
 				ret = HIGHERLOW;
-				high = x;
-				if (!pos)
-					break;
+				found = x;
+				break;
 			}
 		}
 	}
 
 	if (pos)
-		*pos = high;
+		*pos = found;
 
 	return ret;
 }
