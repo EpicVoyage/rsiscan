@@ -121,7 +121,7 @@ bool chart_patterns(const stockinfo &data, bool print, const char *period);
 
 /* Global variables */
 bool verbose, save_config, offline, intraday, walk_back, find_divergence, find_tails, low52, narrow_bbands, test;
-char *home, *old_dir, *list_dir, *config_dir, **tickers;
+char *home, *stock_dir, *old_dir, *list_dir, *config_dir, **tickers;
 int percent, seconds;
 long ticker_count;
 enum server source;
@@ -139,6 +139,7 @@ int main(int argc, char **argv)
 	config_dir = NULL;
 	list_dir = NULL;
 	old_dir = NULL;
+	stock_dir = NULL;
 	tickers = (char **)malloc(sizeof(char *));
 	tickers[0] = NULL;
 	offline = false;
@@ -184,24 +185,22 @@ void create_config()
 	home = getenv("HOME");
 	create_dir(home);
 
-	old_dir = (char *)malloc(strlen(home) + 19);
-	list_dir = (char *)malloc(strlen(home) + 21);
-	config_dir = (char *)malloc(strlen(home) + 20);
+	config_dir = (char *)malloc(strlen(home) + 10);
+	old_dir = (char *)malloc(strlen(home) + 14);
+	list_dir = (char *)malloc(strlen(home) + 16);
+	stock_dir = (char *)malloc(strlen(home) + 15);
 
-	sprintf(config_dir, "%s/.daga", home);
+	sprintf(config_dir, "%s/.rsiscan", home);
 	create_dir(config_dir);
 
-	sprintf(config_dir, "%s/.daga/rsiscan", home);
-	create_dir(config_dir);
-
-	sprintf(old_dir, "%s/.daga/rsiscan/old", home);
+	sprintf(old_dir, "%s/old", config_dir);
 	create_dir(old_dir);
 
-	sprintf(list_dir, "%s/.daga/rsiscan/lists", home);
+	sprintf(list_dir, "%s/lists", config_dir);
 	create_dir(list_dir);
 
-	sprintf(config_dir, "%s/.daga/rsiscan/data", home);
-	create_dir(config_dir);
+	sprintf(stock_dir, "%s/data", config_dir);
+	create_dir(stock_dir);
 
 	return;
 }
@@ -329,6 +328,9 @@ void cleanup()
 	if (list_dir != NULL)
 		free(list_dir);
 
+	if (stock_dir != NULL)
+		free(stock_dir);
+
 	if (tickers[0] != NULL)
 		for (x = 0; x <= ticker_count; x++)
 			free(tickers[x]);
@@ -351,8 +353,8 @@ char *get_filename(const char *ticker) {
 	}
 	tmp = NULL;
 
-	filename = (char *)malloc(strlen(config_dir) + strlen(tkr) + 6);
-	sprintf(filename, "%s/%s.csv", config_dir, tkr);
+	filename = (char *)malloc(strlen(stock_dir) + strlen(tkr) + 6);
+	sprintf(filename, "%s/%s.csv", stock_dir, tkr);
 
 	return filename;
 }
@@ -372,8 +374,8 @@ void delist(const char *ticker)
 		tmp++;
 	tmp = NULL;
 
-	filename = (char *)malloc(strlen(config_dir) + strlen(tkr) + 6);
-	sprintf(filename, "%s/%s.csv", config_dir, tkr);
+	filename = (char *)malloc(strlen(stock_dir) + strlen(tkr) + 6);
+	sprintf(filename, "%s/%s.csv", stock_dir, tkr);
 
 	tmp = (char *)malloc(strlen(old_dir) + strlen(tkr) + 6);
 	sprintf(tmp, "%s/%s.csv", old_dir, tkr);
@@ -645,9 +647,9 @@ void update_tickers()
 
 	if ((save_config) && (tickers[0] == NULL))
 	{
-		if ((saved = opendir(config_dir)) == NULL)
+		if ((saved = opendir(stock_dir)) == NULL)
 		{
-			fprintf(stderr, "Error opening %s: %s\n", config_dir, strerror(errno));
+			fprintf(stderr, "Error opening %s: %s\n", stock_dir, strerror(errno));
 			return;
 		}
 
