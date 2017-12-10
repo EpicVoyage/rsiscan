@@ -1,2 +1,0 @@
-grep -aoE '%[A-Z]{5}|\$[A-Z]{4}|#[A-Z]{3}|"[A-Z]{2}|![A-Z]' /mnt/data/downloads/SP500.lis|grep -aoE '[A-Z]{1,5}'|sort|uniq
-cut '-d ' -f 1 stktick.lst
