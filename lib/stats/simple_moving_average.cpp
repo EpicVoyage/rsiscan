@@ -1,10 +1,11 @@
 #include <stdlib.h>
 #include "lib/stats/simple_moving_average.h"
 
-double *simple_moving_average::generate(struct stock *data, long rows, int period, long count)
+double *simple_moving_average::generate(const stockinfo &data, int period, long count)
 {
 	double sum = 0, *ret;
 	int row, start;
+	long rows = data.length();
 
 	if ((count <= 0) || (rows <= period + 1))
 	{
@@ -20,10 +21,10 @@ double *simple_moving_average::generate(struct stock *data, long rows, int perio
 
 	for (row = start - 1; row >= 0; row--)
 	{
-		sum += data[row].close;
+		sum += data[row]->close;
 		if (row < start - period)
 		{
-			sum -= data[row + period].close;
+			sum -= data[row + period]->close;
 			ret[row] = sum / period;
 		}
 

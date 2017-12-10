@@ -12,15 +12,18 @@
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
+#include <boost/log/trivial.hpp>
 #include "http.h"
 
-char *http::retrieve(char *server, char *path)
+char *http::retrieve(const char *server, const char *path)
 {
 	FILE *wr, *re;
-	char *ret;
+	char *ret = nullptr;
 	int sock;
 
-	if (sock = this->connect(server)) {
+	BOOST_LOG_TRIVIAL(trace) << "Loading: http://" << server << path;
+
+	if ((sock = this->connect(server))) {
 		wr = fdopen(sock, "w");
 		re = fdopen(sock, "r");
 
@@ -44,7 +47,7 @@ char *http::retrieve(char *server, char *path)
 	return ret;
 }
 
-int http::connect(char *server, int port)
+int http::connect(const char *server, int port)
 {
 	struct hostent *record;
 	struct sockaddr_in sin;
@@ -75,7 +78,7 @@ int http::connect(char *server, int port)
 	return sock;
 }
 
-void http::send_request(FILE *wr, char *server, char *path)
+void http::send_request(FILE *wr, const char *server, const char *path)
 {
 	fprintf(wr, "GET %s HTTP/1.1\r\n", path);
 	fprintf(wr, "Host: %s\r\n", server);
@@ -123,10 +126,6 @@ char *http::retrieve_data(FILE *re)
 				{
 					len = strtol(read, NULL, 16);
 
-					/* TODO: Why is Yahoo! off by 50 bytes? */
-					if (this->yahoo_bug)
-						len -= 50;
-
 					if (len <= 0)
 						continue;
 
@@ -145,7 +144,7 @@ char *http::retrieve_data(FILE *re)
 					}
 
 					fgets(read, size, re);
-					if (x = fread(read, 1, len, re))
+					if ((x = fread(read, 1, len, re)))
 					{
 						*(read + x) = 0;
 						strcat(ret, read);

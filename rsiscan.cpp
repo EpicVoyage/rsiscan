@@ -34,6 +34,11 @@
 #include <netdb.h>
 #include <errno.h>
 #include <ctype.h>
+#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
 #include "lib/http.h"
 #include "lib/comma_separated_values.h"
 #include "lib/stock.h"
@@ -70,7 +75,7 @@ enum server {yahoo = 0, google = 1, invest = 2};
 //enum bool {false = 0, true = 1};
 
 /* Servers to query for CSV data */
-const char *servers[] = { "ichart.finance.yahoo.com", "download.finance.yahoo.com",
+const char *servers[] = { "ichart.finance.yahoo.com",
 			  "finance.google.com",
 			  "dunno"
 			};
@@ -84,38 +89,35 @@ const char *i_servers[] = { "download.finance.yahoo.com",
 void create_config();
 void create_dir(char *path);
 void read_args(int argc, char **argv);
-void print_help(char *prog);
+void print_help(const char *prog);
 void cleanup();
-void nosig();
-void sig();
 
 /* 1.2 - Get/Save/Read stock data (cache) */
-void save_to_file(char *ticker, struct stock *data, long rows);
-char *load_from_file(char *ticker);
-void delist(char *ticker);
-char *download_eod_data(char *ticker, time_t from);
-char *download_intraday_data();
-void intraday_request(FILE *out);
-char *get_path(char *ticker, time_t from);
-char *retrieve_data(FILE *in, char *ticker);
-void recursive_free(struct stock *data, long rows);
+char *get_filename(const char *ticker);
+void delist(const char *ticker);
+char *download_eod_data(const char *ticker, time_t from);
+//char *download_intraday_data();
+//void intraday_request(FILE *out);
+char *get_path(const char *ticker, time_t from);
+char *retrieve_data(FILE *in, const char *ticker);
+void recursive_free(stock *data, long rows);
 
 /* 1.3 - Functions which extrapolate from data */
 void update_tickers();
-void load_ticker(char *ticker, struct stock **data, long *rows);
-time_t get_last_date(struct stock *data, long rows);
-long average_volume(struct stock *data, long rows, long n = 10);
-struct stock *make_weekly(struct stock *data, long rows, long *w_rows);
-struct stock *stock_bump_day(struct stock *data, long rows, long *w_rows);
-bool diverge(char *ticker, struct stock *data, long rows, const char *desc);
-double *stock_reduce_close(struct stock *data, long rows);
-void tails(char *ticker, struct stock *data, long rows);
-bool bbands_narrow(char *ticker, struct stock *data, long rows);
-void low52wk(char *ticker, struct stock *data, long rows);
-void test_screener(char *ticker, struct stock *data, long rows);
-void analyze(char *ticker, struct stock *data, long rows);
-int divergence(double *values, long rows, long reset_high, long reset_low, long *pos = NULL);
-bool chart_patterns(struct stock *data, long rows, bool print, const char *period);
+stockinfo load_ticker(const char *ticker); //, stock **data, long *rows);
+time_t get_last_date(stockinfo &data);
+long average_volume(const stockinfo &data, long n = 10);
+//stock *make_weekly(const stock *data, long rows, long *w_rows);
+stockinfo stock_bump_day(stockinfo &data);
+bool diverge(const char *ticker, const stockinfo &data, const char *desc);
+double *stock_reduce_close(const stock *data, long rows);
+void tails(const char *ticker, const stockinfo &data);
+bool bbands_narrow(const char *ticker, const stockinfo &data);
+void low52wk(const char *ticker, const stockinfo &data);
+void test_screener(const char *ticker, const stockinfo &data);
+void analyze(const char *ticker, const stockinfo data);
+int divergence(const double *values, long rows, long reset_high, long reset_low, long *pos = NULL);
+bool chart_patterns(const stockinfo &data, bool print, const char *period);
 
 /* Global variables */
 bool verbose, save_config, offline, intraday, walk_back, find_divergence, find_tails, low52, narrow_bbands, test;
@@ -147,13 +149,26 @@ int main(int argc, char **argv)
 	narrow_bbands = false;
 	find_divergence = false;
 
-	source = yahoo;
-
+	source = google;
 	create_config();
+
+	// Configure log file output.
+	// TODO: Severity does not appear in the logs.
+	char *logfile = (char *)malloc(strlen(config_dir) + 13);
+	sprintf(logfile, "%s/rsiscan.log", config_dir);
+	boost::log::add_common_attributes();
+	boost::log::expressions::attr< boost::log::trivial::severity_level >("Severity");
+	boost::log::add_file_log(
+			boost::log::keywords::file_name = logfile,
+			boost::log::keywords::format = "[%TimeStamp%] [%Severity%]: %Message%"
+	);
+
+	// Start the main program.
 	read_args(argc, argv);
 	update_tickers();
 
 	cleanup();
+	free(logfile);
 
 	return 0;
 }
@@ -217,8 +232,8 @@ void read_args(int argc, char **argv)
 	{
 		if ((strcmp(argv[x], "-v") == 0) || (strcmp(argv[x], "--verbose") == 0))
 			verbose = true;
-		else if (strcmp(argv[x], "--yahoo") == 0)
-			source = yahoo;
+		//else if (strcmp(argv[x], "--yahoo") == 0) - TODO: Discontinued Nov. 2017.
+		//	source = yahoo;
 		else if (strcmp(argv[x], "--google") == 0)
 			source = google;
 		/*else if (strcmp(argv[x], "--invest") == 0)
@@ -229,8 +244,8 @@ void read_args(int argc, char **argv)
 			seconds = atoi(argv[x] + 8);
 		else if (strcmp(argv[x], "--offline") == 0)
 			offline = true;
-		else if (strcmp(argv[x], "--intraday") == 0)
-			intraday = true;
+		//else if (strcmp(argv[x], "--intraday") == 0) - TODO: service discontinued Nov. 2017
+		//	intraday = true;
 		else if (strcmp(argv[x], "--walk") == 0)
 			walk_back = true;
 		else if (strcmp(argv[x], "--divergence") == 0)
@@ -265,17 +280,17 @@ void read_args(int argc, char **argv)
 
 
 /* Print program usage and exit */
-void print_help(char *prog)
+void print_help(const char *prog)
 {
 	printf("Usage: %s [--switch] [--switch] [TKR1] [TKR2] [etc.]\n\n", prog);
 
-	printf("    --yahoo      Download data from %s [default]\n", servers[yahoo]);
+	//printf("    --yahoo      Download data from %s [default]\n", servers[yahoo]);
 	printf("    --google     Download data from %s\n", servers[google]);
 	/*printf("    --invest     Download data from InvestorLink [commercial]\n");*/
 	printf("    --up=##      Only show stocks that have moved up ## percent\n");
 	printf("    --sleep=##   Sleep ## seconds between server requests [default: 5]\n");
 	printf("    --offline    Do not download any data for this run\n");
-	printf("    --intraday   Temporarily use intraday quotes for today's closing information\n");
+	//printf("    --intraday   Temporarily use intraday quotes for today's closing information\n");
 	printf("    --walk       Walk back through the stock histories\n");
 	printf("    --low52      Stocks near their 52-week low\n");
 	printf("    --test       A test screener...\n");
@@ -323,73 +338,8 @@ void cleanup()
 	return;
 }
 
-void nosig()
-{
-	signal(SIGINT, SIG_IGN);
-	signal(SIGHUP, SIG_IGN);
-	signal(SIGTERM, SIG_IGN);
-	signal(SIGPIPE, SIG_IGN);
-
-	return;
-}
-
-void sig()
-{
-	signal(SIGINT, SIG_DFL);
-	signal(SIGHUP, SIG_DFL);
-	signal(SIGTERM, SIG_DFL);
-	signal(SIGPIPE, SIG_DFL);
-
-	return;
-}
-
-/***************************************************
- * 1.2 - Get/Save/Read stock data (cache)
- ***************************************************
- * Save (cache) ticker data to files for later use */
-void save_to_file(char *ticker, struct stock *data, long rows)
-{
-	char *filename, *tkr, *tmp;
-	long x, y;
-	FILE *wr;
-
-	if (!save_config)
-		return;
-
-	tkr = (char *)malloc(strlen(ticker) + 1);
-	strcpy(tkr, ticker);
-	tmp = tkr;
-	while ((*tmp = tolower(*tmp)) && *tmp++);
-
-	filename = (char *)malloc(strlen(config_dir) + strlen(tkr) + 6);
-	sprintf(filename, "%s/%s.csv", config_dir, tkr);
-
-	nosig();
-	wr = fopen(filename, "w");
-	for (x = 0; x < rows; x++)
-	{
-		if (data[x].date)
-			fprintf(wr, "%s,%g,%g,%g,%g,%li\n", data[x].date, data[x].open, data[x].high, data[x].low, data[x].close, data[x].volume);
-	}
-	fclose(wr);
-	sig();
-
-	free(filename);
-	free(tkr);
-
-	return;
-}
-
-/* Load ticker data from files */
-char *load_from_file(char *ticker)
-{
-	char *filename, *tkr, *tmp, *ret = NULL;
-	struct stat buf;
-	long x, y;
-	FILE *re;
-
-	if (!save_config)
-		return NULL;
+char *get_filename(const char *ticker) {
+	char *tkr, *tmp, *filename;
 
 	tkr = (char *)malloc(strlen(ticker) + 1);
 	strcpy(tkr, ticker);
@@ -397,45 +347,17 @@ char *load_from_file(char *ticker)
 	while (*tmp)
 	{
 		*tmp = tolower(*tmp);
-		*tmp++;
+		tmp++;
 	}
 	tmp = NULL;
 
 	filename = (char *)malloc(strlen(config_dir) + strlen(tkr) + 6);
 	sprintf(filename, "%s/%s.csv", config_dir, tkr);
 
-	if (stat(filename, &buf))
-	{
-		if (verbose)
-			printf("Unable to load %s from file: %s\n", ticker, filename);
-
-		return NULL;
-	}
-
-	re = fopen(filename, "r");
-	tmp = (char *)malloc(2048);
-	while (fgets(tmp, 2048, re) != NULL)
-	{
-		if (ret == NULL)
-		{
-			ret = (char *)malloc(strlen(tmp) + 1);
-			*ret = '\0';
-		}
-		else
-			ret = (char *)realloc(ret, strlen(ret) + strlen(tmp) + 1);
-
-		strcat(ret, tmp);
-	}
-
-	fclose(re);
-	free(filename);
-	free(tkr);
-	free(tmp);
-
-	return ret;
+	return filename;
 }
 
-void delist(char *ticker)
+void delist(const char *ticker)
 {
 	char *filename, *tkr, *tmp;
 	struct stat buf;
@@ -446,7 +368,8 @@ void delist(char *ticker)
 	tkr = (char *)malloc(strlen(ticker) + 1);
 	strcpy(tkr, ticker);
 	tmp = tkr;
-	while ((*tmp = tolower(*tmp++)));
+	while ((*tmp = tolower(*tmp)))
+		tmp++;
 	tmp = NULL;
 
 	filename = (char *)malloc(strlen(config_dir) + strlen(tkr) + 6);
@@ -455,6 +378,8 @@ void delist(char *ticker)
 	tmp = (char *)malloc(strlen(old_dir) + strlen(tkr) + 6);
 	sprintf(tmp, "%s/%s.csv", old_dir, tkr);
 
+
+	BOOST_LOG_TRIVIAL(trace) << "Removing stock data: " << filename;
 
 	if (stat(filename, &buf) == 0)
 		if (rename(filename, tmp) == -1)
@@ -467,11 +392,10 @@ void delist(char *ticker)
 }
 
 /* Download End of Day ticker data */
-char *download_eod_data(char *ticker, time_t from)
+char *download_eod_data(const char *ticker, time_t from)
 {
 	char *ret, *path = get_path(ticker, from);
 	http h;
-	h.yahoo_bug = (source == yahoo);
 	ret = h.retrieve((char *)servers[source], path);
 
 	free(path);
@@ -480,11 +404,11 @@ char *download_eod_data(char *ticker, time_t from)
 }
 
 /* Download intrday ticker data */
-char *download_intraday_data()
+/*char *download_intraday_data()
 {
 	struct hostent *record;
 	struct sockaddr_in sin;
-	char *ptr, *ret = NULL;
+	char *ret = NULL;
 	int sock, conn;
 	FILE *wr, *re;
 
@@ -522,13 +446,13 @@ char *download_intraday_data()
 	free(ret);
 	ret = NULL;
 
-	/*if ((ret != NULL) && (strcasestr(ret, "Sorry, the page you requested was not found.")))
+	*if ((ret != NULL) && (strcasestr(ret, "Sorry, the page you requested was not found.")))
 	{
 		printf("Error: %s - No data found, delisting stock\n", ticker);
 		delist(ticker);
 		free(ret);
 		ret = NULL;
-	}*/
+	}*
 
 	fclose(wr);
 	fclose(re);
@@ -537,9 +461,9 @@ char *download_intraday_data()
 	sleep(seconds);
 
 	return ret;
-}
+}*/
 
-char *get_path(char *ticker, time_t from) {
+char *get_path(const char *ticker, time_t from) {
 	struct tm *date_start, date_finish;
 	time_t epoch;
 	char *ret = (char *)malloc(strlen(ticker) + 64);
@@ -560,7 +484,7 @@ char *get_path(char *ticker, time_t from) {
 }
 
 /* Request today's information (all of it) */
-void intraday_request(FILE *out)
+/*void intraday_request(FILE *out)
 {
 	long x, stop;
 
@@ -579,15 +503,15 @@ void intraday_request(FILE *out)
 	}
 
 	fprintf(out, "Host: %s\r\n", servers[source]);
-	fprintf(out, "Connection: close\r\n\r\n", servers[source]);
+	fprintf(out, "Connection: close\r\n\r\n");
 
 	fflush(out);
 
 	return;
-}
+}*/
 
 /* Read back CSV data from server */
-char *retrieve_data(FILE *in, char *ticker)
+char *retrieve_data(FILE *in, const char *ticker)
 {
 	bool chunked = false, start = false;
 	long x, len, size, content = 0;
@@ -689,9 +613,9 @@ char *retrieve_data(FILE *in, char *ticker)
 }
 
 /* Recursively free data variables (one multi-dimensional array) */
-void recursive_free(struct stock *data, long rows)
+void recursive_free(stock *data, long rows)
 {
-	long x, y;
+	long x;
 
 	for (x = 0; x < rows; x++)
 		if (data[x].date)
@@ -707,14 +631,15 @@ void recursive_free(struct stock *data, long rows)
  * Call load_ticker() for each stock locally cached */
 void update_tickers()
 {
-	long x, pos, position, rows = 0, weekly_rows = 0, all_rows = 0, vol = 0, distance1, distance2;
-	struct stock *data = NULL, *weekly_data = NULL, *all_data = NULL;
+	long x, pos, position, rows = 0, /*weekly_rows = 0, divergence_rows = 0,*/ all_rows = 0, vol = 0, distance1, distance2;
+	stockinfo data, all_data, weekly_data, divergence_data;
 	bool diverge_daily, diverge_weekly, found_setup, cont;
+	moving_average_convergence_divergence macd;
+	double *sma5 = nullptr, *macd_h = nullptr;
 	int direction1, direction2;
 	double movement1, movement2;
 	simple_moving_average sma;
 	struct dirent *file;
-	double *sma5 = NULL;
 	DIR *saved;
 	char *tmp;
 
@@ -735,7 +660,7 @@ void update_tickers()
 			while ((*tmp != '\0') && (*tmp != '.'))
 			{
 				*tmp = toupper(*tmp);
-				*tmp++;
+				tmp++;
 			}
 			*tmp = 0;
 
@@ -748,8 +673,8 @@ void update_tickers()
 		closedir(saved);
 	}
 
-	if (!offline && intraday)
-		download_intraday_data();
+	//if (!offline && intraday)
+	//	download_intraday_data();
 
 	if (verbose)
 		printf("%li tickers loaded.\n", ticker_count);
@@ -757,49 +682,60 @@ void update_tickers()
 	for (x = 0; x <= ticker_count; x++)
 	{
 		// Load the ticker data and remember our spot.
-		load_ticker(tickers[x], &data, &rows);
+		stockinfo data = load_ticker(tickers[x]); //, &data, &rows);
 		all_data = data;
 		all_rows = rows;
+		rows = data.length();
 
 		// If we loaded data...
 		if (rows)
 		{
 			if (walk_back)
 			{
-				sma5 = sma.generate(data, rows, 5, rows - 11);
+				sma5 = sma.generate(data, 5, rows - 11);
 			}
 
 			// Review the data.
 			do {
 				found_setup = false;
 				if (walk_back && verbose)
-					printf("**%s**\n", data[0].date);
+					printf("**%s**\n", data[0]->date);
 
-				vol = average_volume(data, rows);
+				vol = average_volume(data);
 				if (find_divergence)
 				{
-					diverge_daily = diverge(tickers[x], data, rows, "daily");
+					// TODO: Detect MACD cross-over signal after divergence ->
+					macd_h = macd.histogram(data, 12, 26, 9, rows - 26);
+					if (((*macd_h > 0) && (macd_h[1] < 0)) || ((*macd_h < 0) && (macd_h[1] > 0))) {
+						divergence_data = data;
+						divergence_data.shift();
+						diverge(tickers[x], divergence_data, "MACD x-over after daily");
+					}
 
-					weekly_data = make_weekly(data, rows, &weekly_rows);
-					diverge_weekly = diverge(tickers[x], weekly_data, weekly_rows, "weekly");
-					free(weekly_data);
+					diverge_daily = diverge(tickers[x], data, "potential daily");
+
+					weekly_data = data.weekly();
+					diverge_weekly = diverge(tickers[x], weekly_data, "potential weekly");
 
 					found_setup = (diverge_daily || diverge_weekly);
 					if (diverge_daily && diverge_weekly)
-						printf("\n%s, %s: Daily and Weekly triple divergence!\n\n", data[0].date, tickers[x]);
+						printf("\n%s, %s: Daily and Weekly triple divergence!\n\n", data[0]->date, tickers[x]);
+
+					if (macd_h)
+						free(macd_h);
 				}
 				else if (find_tails)
-					tails(tickers[x], data, rows);
+					tails(tickers[x], data);
 				else if (low52)
-					low52wk(tickers[x], data, rows);
+					low52wk(tickers[x], data);
 				else if (narrow_bbands)
-					found_setup = bbands_narrow(tickers[x], data, rows);
+					found_setup = bbands_narrow(tickers[x], data);
 				else if (test)
-					test_screener(tickers[x], data, rows);
+					test_screener(tickers[x], data);
 				else if (vol > 1000000)
-					analyze(tickers[x], data, rows);
+					analyze(tickers[x], data);
 				else if (verbose)
-					printf("%s, %s: volume = %li\n", data[0].date, tickers[x], vol);
+					printf("%s, %s: volume = %li\n", data[0]->date, tickers[x], vol);
 
 				// TODO?: There are more efficient ways to do this than to re-run the full test for every day.
 				if (walk_back && (rows > 100))
@@ -819,17 +755,17 @@ void update_tickers()
 								pos--;
 								if (direction1 == UP)
 								{
-									if (all_data[pos].close - all_data[position].close > movement1)
-										movement1 = all_data[pos].close - all_data[position].close;
+									if (all_data[pos]->close - all_data[position]->close > movement1)
+										movement1 = all_data[pos]->close - all_data[position]->close;
 									cont = (sma5[pos - 1] >= sma5[pos]);
 								}
 								else
 								{
-									if (all_data[position].close - all_data[pos].close < movement1)
-										movement1 = all_data[pos].close - all_data[position].close;
+									if (all_data[position]->close - all_data[pos]->close < movement1)
+										movement1 = all_data[pos]->close - all_data[position]->close;
 									cont = (sma5[pos] >= sma5[pos - 1]);
 								}
-								//printf("%s (%s vs. %s): %.02f (%li), %.02f (%li), %.02f\n", direction1 == UP ? "UP" : "DOWN", all_data[position].date, all_data[pos].date, all_data[position].close, position, all_data[pos].close, pos, movement1);
+								//printf("%s (%s vs. %s): %.02f (%li), %.02f (%li), %.02f\n", direction1 == UP ? "UP" : "DOWN", all_data[position]->date, all_data[pos]->date, all_data[position].close, position, all_data[pos].close, pos, movement1);
 								distance1++;
 							} while ((pos > 1) && cont);
 							//for (distance1 = 1; (pos > 1) && (sma5[pos] >= sma5[pos -  1]); pos--);
@@ -843,14 +779,14 @@ void update_tickers()
 							{
 								if (direction2 == UP)
 								{
-									if (all_data[pos].close - all_data[position].close > movement2)
-										movement2 = all_data[pos].close - all_data[position].close;
+									if (all_data[pos]->close - all_data[position]->close > movement2)
+										movement2 = all_data[pos]->close - all_data[position]->close;
 									cont = (sma5[pos - 1] >= sma5[pos]);
 								}
 								else
 								{
-									if (all_data[pos].close - all_data[position].close < movement2)
-										movement2 = all_data[pos].close - all_data[position].close;
+									if (all_data[pos]->close - all_data[position]->close < movement2)
+										movement2 = all_data[pos]->close - all_data[position]->close;
 									cont = (sma5[pos] >= sma5[pos - 1]);
 								}
 								//printf("%s (%s vs. %s): %.02f (%li), %.02f (%li), %.02f\n", direction2 == UP ? "UP" : "DOWN", all_data[position].date, all_data[pos].date, all_data[position].close, position, all_data[pos].close, pos, movement2);
@@ -861,14 +797,13 @@ void update_tickers()
 						}
 					}
 
-					data = stock_bump_day(data, rows, &rows);
+					data = stock_bump_day(data);
 				}
-			} while (walk_back && data && (rows > 100));
+			} while (walk_back && data.length() && (rows > 100));
 
 			// Clean up.
-			if (sma5)
+			if (walk_back && sma5)
 				free(sma5);
-			recursive_free(all_data, all_rows);
 		}
 		else
 		{
@@ -880,52 +815,57 @@ void update_tickers()
 }
 
 /* Load ticker data (file, then internet) and parse */
-void load_ticker(char *ticker, struct stock **data, long *rows)
+stockinfo load_ticker(const char *ticker) //, stock **data, long *rows)
 {
-	long x, len, w_rows;
-	char *tmp, *block, *blocknew;
-	double rsi, weekly_rsi;
+	long x; //, len;
+	char /* *tmp,*/ *block, *blocknew, *filename;
 	comma_separated_values csv;
+	stockinfo s;
+	long rows;
 	time_t from;
 
-	if ((block = load_from_file(ticker)) == NULL)
-	{
+	filename = get_filename(ticker);
+	if (!s.load_csv(filename)) {
 		if (offline || ((block = download_eod_data(ticker, 0)) == NULL))
 		{
 			if (verbose)
 				printf("Unable to load %s from server. Giving up.\n", ticker);
 
-			return;
+			return s;
 		}
 	}
 
-	len = strlen(block);
-	*data = csv.parse(block, rows);
+	if (s.length()) {
+		if ((from = get_last_date(s)) != 0) {
+			if (!offline && ((blocknew = download_eod_data(ticker, from)) != NULL)) {
+				//for (x = 0; x < len; x++)
+				//	if (*(block + x) == '\0') *(block + x) = '\n';
 
-	if ((from = get_last_date(*data, *rows)) != 0)
-	{
-		if (!offline && ((blocknew = download_eod_data(ticker, from)) != NULL))
-		{
-			for (x = 0; x < len; x++)
-				if (*(block + x) == '\0') *(block + x) = '\n';
+				//tmp = (char *)malloc(strlen(block) + strlen(blocknew) + 2);
+				//sprintf(tmp, "%s\n%s", blocknew, block);
 
-			tmp = (char *)malloc(strlen(block) + strlen(blocknew) + 2);
-			sprintf(tmp, "%s\n%s", blocknew, block);
+				free(blocknew);
 
-			free(blocknew);
-			recursive_free(*data, *rows);
-
-			*data = csv.parse(tmp, rows);
+				stock *temp = csv.parse(blocknew, &rows);
+				for (x = 0; x < rows; x++) {
+					s.insert_at(temp[x], x);
+				}
+				free(temp);
+			}
 		}
+
+		s.save_csv(filename);
+	} else {
+		// TODO: Delist?
 	}
 
-	save_to_file(ticker, *data, *rows);
+	free(filename);
 
-	return;
+	return s;
 }
 
 /* Get the last date we have data for, skip weekends */
-time_t get_last_date(struct stock *data, long rows)
+time_t get_last_date(stockinfo &data)
 {
 	struct tm last, now;
 	time_t tmp, ret = 0;
@@ -934,10 +874,9 @@ time_t get_last_date(struct stock *data, long rows)
 	last.tm_min = 0;
 	last.tm_sec = 1;
 	last.tm_isdst = -1;
-	if (rows >= 1)
-		if (!strptime(data[0].date, "%Y-%m-%d", &last))
-			if (!strptime(data[0].date, "%d-%B-%y", &last))
-				return 0;
+	if (!strptime(data[0]->date, "%Y-%m-%d", &last))
+		if (!strptime(data[0]->date, "%d-%B-%y", &last))
+			return 0;
 
 	if ((tmp = mktime(&last)) == -1)
 		return 0;
@@ -970,15 +909,16 @@ time_t get_last_date(struct stock *data, long rows)
 /**
  * Average the stocks volume from the last two weeks.
  */
-long average_volume(struct stock *data, long rows, long n)
+long average_volume(const stockinfo &data, long n)
 {
+	long rows = data.length();
 	long ret = 0;
 	int x;
 
 	if (rows <= n)
 		return 0;
 	for (x = 1; x <= n; x++)
-		ret += data[x].volume;
+		ret += data[x]->volume;
 
 	ret /= n;
 	return ret;
@@ -987,19 +927,19 @@ long average_volume(struct stock *data, long rows, long n)
 /**
  * Convert end-of-day data to weekly data.
  */
-struct stock *make_weekly(struct stock *data, long rows, long *w_rows)
+/*stock *make_weekly(const stock *data, long rows, long *w_rows)
 {
 	long x;
 	struct tm last;
 	int wday = -1;
-	struct stock *ret;
+	stock *ret;
 	time_t tmp;
 
 	if (rows < 1)
 		return NULL;
 
 	*w_rows = -1;
-	ret = (struct stock *)malloc((rows + 1) * sizeof(struct stock));
+	ret = (stock *)malloc((rows + 1) * sizeof(stock));
 
 	for (x = 1; x < rows; x++)
 	{
@@ -1037,32 +977,31 @@ struct stock *make_weekly(struct stock *data, long rows, long *w_rows)
 		wday = last.tm_wday;
 	}
 
-	ret = (stock *)realloc(ret, (*w_rows + 1) * sizeof(struct stock));
+	ret = (stock *)realloc(ret, (*w_rows + 1) * sizeof(stock));
 
 	return ret;
-}
+}*/
 
 /**
  * Bump the latest day/week from loaded stock data.
  */
-struct stock *stock_bump_day(struct stock *data, long rows, long *w_rows)
+stockinfo stock_bump_day(stockinfo &data)
 {
-	struct stock *ret = NULL;
-	long x = 0;
+	long rows = data.length();
+	stockinfo ret;
 
-	*w_rows = 0;
 	if (rows < 1)
-		return NULL;
+		return ret;
 
-	ret = data + 1;
-	*w_rows = (rows - 1);
+	ret = data;
+	ret.shift();
 	return ret;
 }
 
 /**
  * Reduce a loaded stock struct to an array of close prices.
  */
-double *stock_reduce_close(struct stock *data, long rows) {
+double *stock_reduce_close(const stockinfo &data, long rows) {
 	double *ret = NULL;
 	long x;
 
@@ -1075,7 +1014,7 @@ double *stock_reduce_close(struct stock *data, long rows) {
 
 	ret = (double *)malloc(sizeof(double) * (rows + 1));
 	for (x = 0; x < rows; x++)
-		ret[x] = data[x].close;
+		ret[x] = data[x]->close;
 
 	return ret;
 }
@@ -1089,7 +1028,7 @@ double *stock_reduce_close(struct stock *data, long rows) {
  *
  * TODO: We need a strength indicator.
  */
-bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
+bool diverge(const char *ticker, const stockinfo &data, const char *desc)
 {
 	const char *debug_modes[] = {"IGNORED", "HIGHER HIGH", "LOWER HIGH", "HIGHER LOW", "LOWER LOW"};
 
@@ -1098,13 +1037,14 @@ bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	simple_moving_average sma;
 	bollinger bb;
 	bool is_uptrend, is_diverging = false;
-	double *stock_close = NULL, *sma_weekly = NULL, *sma_data = NULL, *bb_data = NULL, *rsi_data = NULL, *macd_data = NULL, *macd_h = NULL;
+	double *stock_close = NULL, /* *sma_weekly = NULL,*/ *sma_data = NULL, *bb_data = NULL, *rsi_data = NULL, *macd_data = NULL, *macd_h = NULL;
 	long trend_change = 0, reset_h = 0, reset_l = 0, found_divergence = 0, x;
 	int d_stock, d_rsi, d_macd, d_macd_h;
+	long rows = data.length();
 
-	//sma_weekly = sma.generate(data, rows, 5, rows - 11);
-	sma_data = sma.generate(data, rows, 20, rows - 26);
-	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
+	//sma_weekly = sma.generate(data, 5, rows - 11);
+	sma_data = sma.generate(data, 20, rows - 26);
+	bb_data = bb.bands(data, 20, 2, rows - 26);
 
 	// Find the current "trend" - "up" or "down."
 	x = 0;
@@ -1131,10 +1071,10 @@ bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	// Prices outside the Bollinger Bands reset are reset points for our "high" and "low" patterns. I think CV said to do this sometime.
 	for (x = trend_change; x < rows; x++)
 	{
-		if ((reset_h == 0) && (data[x].close > sma_data[x] + bb_data[x]))
+		if ((reset_h == 0) && (data[x]->close > sma_data[x] + bb_data[x]))
 			reset_h = x;
 
-		if ((reset_l == 0) && (data[x].close < sma_data[x] - bb_data[x]))
+		if ((reset_l == 0) && (data[x]->close < sma_data[x] - bb_data[x]))
 			reset_l = x;
 
 		if ((reset_h > 0) && (reset_l > 0))
@@ -1146,27 +1086,28 @@ bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 	d_stock = divergence(stock_close, rows - 26, reset_h, reset_l, NULL);
 
 	// rsi trend
-	d_rsi = 0;
+	d_rsi = IGNORED;
 	if ((d_stock == HIGHERHIGH) || (d_stock == LOWERLOW))
 	{
-		rsi_data = rsi.generate(data, rows, 14, rows - 26);
-		d_rsi = divergence(rsi_data, rows - 26, reset_h, reset_l, &found_divergence);
+		rsi_data = rsi.generate(data, 14, data.length() - 26);
+		d_rsi = divergence(rsi_data, data.length() - 26, reset_h, reset_l, &found_divergence);
 	}
 
 	// MACD trend
-	d_macd = 0;
+	d_macd = IGNORED;
 	if (d_rsi && found_divergence)
 	{
-		macd_data = macd.generate(data, rows, 12, 26, rows - 26);
-		d_macd = divergence(macd_data, rows - 26, reset_h, reset_l, &found_divergence);
+		macd_data = macd.generate(data, 12, 26, rows - 26);
+		d_macd = divergence(macd_data - 26, rows, reset_h, reset_l, &found_divergence);
 	}
 
 	// MACD histogram trend
-	d_macd_h = 0;
+	d_macd_h = IGNORED;
 	if (d_macd)
 	{
-		macd_h = macd.histogram(data, rows, 12, 26, 9, rows - 26);
-		d_macd_h = divergence(macd_h, rows - 26, reset_h, reset_l, &found_divergence);
+		macd_h = macd.histogram(data, 12, 26, 9, rows - 26);
+		if (((d_stock == HIGHERHIGH) && (macd_h[0] > 0)) || ((d_stock == LOWERLOW) && (macd_h[0] < 0)))
+			d_macd_h = divergence(macd_h, rows - 26, reset_h, reset_l, &found_divergence);
 	}
 
 	// Look for the divergence.
@@ -1175,19 +1116,19 @@ bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 		if (((d_stock == HIGHERHIGH) && (d_rsi == LOWERHIGH) && (d_macd == LOWERHIGH) && (d_macd_h == LOWERHIGH)) ||
 	    	    ((d_stock == LOWERLOW) && (d_rsi == HIGHERLOW) && (d_macd == HIGHERLOW) && (d_macd_h == HIGHERLOW)))
 		{
-			printf("%s, %s is in \033[%im%s\033[0m triple divergence\n", data[0].date, ticker, (strncmp(desc, "weekly", 6) == 0) ? 31 : 32, desc);
-			printf("    \033[%im%s\033[0m; Distance: %li, %s; %.02f, %.02f; RSI: %.02f, %.02f, %s; MACD: %.02f, %.02f, %s; MACD histogram: %.02f, %.02f, %s; high reset: %li/%s, low reset: %li/%s; Volume: %li!\n\n", (d_stock == HIGHERHIGH) ? 31 : 32, debug_modes[d_stock], found_divergence, data[found_divergence].date, stock_close[found_divergence], *stock_close,
+			printf("%s, %s is in \033[%im%s\033[0m triple divergence\n", data[0]->date, ticker, (strncmp(desc, "potential", 6) == 0) ? 31 : 32, desc);
+			printf("    \033[%im%s\033[0m; Distance: %li, %s; %.02f, %.02f; RSI: %.02f, %.02f, %s; MACD: %.02f, %.02f, %s; MACD histogram: %.02f, %.02f, %s; high reset: %li/%s, low reset: %li/%s; Volume: %li!\n\n", (d_stock == HIGHERHIGH) ? 31 : 32, debug_modes[d_stock], found_divergence, data[found_divergence]->date, stock_close[found_divergence], *stock_close,
 					rsi_data[found_divergence], *rsi_data, debug_modes[d_rsi],
 					macd_data[found_divergence], *macd_data, debug_modes[d_macd],
 					macd_h[found_divergence], *macd_h, debug_modes[d_macd_h],
-					reset_h, data[reset_h].date, reset_l, data[reset_l].date, data[0].volume);
+					reset_h, data[reset_h]->date, reset_l, data[reset_l]->date, data[0]->volume);
 			is_diverging = true;
 		}
 		else if (verbose)
-			printf("%s, Stock: %s/%s, RSI: %s, MACD: %s, Histogram: %s\n", data[0].date, ticker, debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
+			printf("%s, Stock: %s/%s, RSI: %s, MACD: %s, Histogram: %s\n", data[0]->date, ticker, debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
 	}
 	else if (verbose)
-		printf("%s, Stock: %s/%s, RSI: %s, MACD: %s, Histogram: %s\n", data[0].date, ticker, debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
+		printf("%s, Stock: %s/%s, RSI: %s, MACD: %s, Histogram: %s\n", data[0]->date, ticker, debug_modes[d_stock], debug_modes[d_rsi], debug_modes[d_macd], debug_modes[d_macd_h]);
 
 	if (stock_close)
 		free(stock_close);
@@ -1208,37 +1149,38 @@ bool diverge(char *ticker, struct stock *data, long rows, const char *desc)
 /**
  * Find stocks which opened+closed inside Bollinger Bands, but which dipped below the bottom band.
  */
-void tails(char *ticker, struct stock *data, long rows)
+void tails(const char *ticker, const stockinfo &data)
 {
 	simple_moving_average sma;
 	bollinger bb;
 	double *sma_data = NULL, *bb_data = NULL;
 	int x, count;
+	long rows = data.length();
 
-	if (rows <= 35)
+	if (data.length() <= 35)
 		return;
 
-	sma_data = sma.generate(data, rows, 20, rows - 26);
-	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
+	sma_data = sma.generate(data, 20, rows - 26);
+	bb_data = bb.bands(data, 20, 2, rows - 26);
 
 	count = 0;
 	for (x = 0; x < 5; x++)
 	{
-		if ((data[x].low < sma_data[x] - bb_data[x]) && (data[x].close > sma_data[x] - bb_data[x]))
+		if ((data[x]->low < sma_data[x] - bb_data[x]) && (data[x]->close > sma_data[x] - bb_data[x]))
 		{
 			count++;
-			if (data[x].open < sma_data[x] - bb_data[x])
+			if (data[x]->open < sma_data[x] - bb_data[x])
 				count++;
 		}
-		else if ((data[x].high > sma_data[x] + bb_data[x]) && (data[x].close < sma_data[x] + bb_data[x]))
+		else if ((data[x]->high > sma_data[x] + bb_data[x]) && (data[x]->close < sma_data[x] + bb_data[x]))
 		{
 			count--;
-			if (data[x].open > sma_data[x] + bb_data[x])
+			if (data[x]->open > sma_data[x] + bb_data[x])
 				count--;
 		}
 
-		if ((data[x].close > sma_data[x] + bb_data[x]) || (data[x].close < sma_data[x] - bb_data[x]) ||
-		    ((data[x].high < sma_data[x] + bb_data[x]) && (data[x].low > sma_data[x] - bb_data[x])))
+		if ((data[x]->close > sma_data[x] + bb_data[x]) || (data[x]->close < sma_data[x] - bb_data[x]) ||
+		    ((data[x]->high < sma_data[x] + bb_data[x]) && (data[x]->low > sma_data[x] - bb_data[x])))
 		{
 			count = 0;
 			break;
@@ -1246,7 +1188,7 @@ void tails(char *ticker, struct stock *data, long rows)
 	}
 
 	if ((count >= 4) || (count <= -4))
-		printf("%s, %s, strength: %i\n", data[0].date, ticker, count);
+		printf("%s, %s, strength: %i\n", data[0]->date, ticker, count);
 
 	if (sma_data)
 		free(sma_data);
@@ -1259,29 +1201,30 @@ void tails(char *ticker, struct stock *data, long rows)
 /**
  * Narrow bollinger bands.
  */
-bool bbands_narrow(char *ticker, struct stock *data, long rows)
+bool bbands_narrow(const char *ticker, const stockinfo &data)
 {
 	simple_moving_average sma;
 	bollinger bb;
-	double *sma_data = NULL, *bb_data = NULL, narrowest = NULL, widest = NULL;
+	double *sma_data = nullptr, *bb_data = nullptr, narrowest = 0, widest = 0;
 	bool in_bands, ret = false;
 	long days_in_bands, x;
+	long rows = data.length();
 
-	sma_data = sma.generate(data, rows, 20, rows - 26);
-	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
+	sma_data = sma.generate(data, 20, rows - 26);
+	bb_data = bb.bands(data, 20, 2, rows - 26);
 
 	// TODO: Generalize me. Something like ./rsiscan '(volume > 100000) && (bb_top_daily < last_trade)'.
-	if (average_volume(data, rows) < 500000)
+	if (average_volume(data) < 500000)
 	{
 		if (verbose)
-			printf("%s, %s: Ignored for low volume.\n", data[0].date, ticker);
+			printf("%s, %s: Ignored for low volume.\n", data[0]->date, ticker);
 		return ret;
 	}
 
 	if (!sma_data || !sma_data[0])
 	{
 		if (verbose)
-			printf("%s, %s: Ignored because we have no SMA.\n", data[0].date, ticker);
+			printf("%s, %s: Ignored because we have no SMA.\n", data[0]->date, ticker);
 		return ret;
 	}
 
@@ -1297,7 +1240,7 @@ bool bbands_narrow(char *ticker, struct stock *data, long rows)
 			widest = bb_data[x];
 
 		//printf("%.02f, %.02f. %.02f\n", sma_data[x], bb_data[x], data[x].close);
-		if (in_bands && (sma_data[x] + bb_data[x] > data[x].close) && (data[x].close > sma_data[x] - bb_data[x]))
+		if (in_bands && (sma_data[x] + bb_data[x] > data[x]->close) && (data[x]->close > sma_data[x] - bb_data[x]))
 			days_in_bands++;
 		else
 			in_bands = false;
@@ -1307,7 +1250,7 @@ bool bbands_narrow(char *ticker, struct stock *data, long rows)
 
 	if (ret)
 	{
-		printf("%s, \033[%im%s\033[0m: Narrow bands (In Bands: %li, Close: %.02f, Width: %.02f, Narrowest: %.02f, Widest: %.02f).\n", data[0].date, (days_in_bands > 20) ? 32 : 0, ticker, days_in_bands, data[0].close, bb_data[0], narrowest, widest);
+		printf("%s, \033[%im%s\033[0m: Narrow bands (In Bands: %li, Close: %.02f, Width: %.02f, Narrowest: %.02f, Widest: %.02f).\n", data[0]->date, (days_in_bands > 20) ? 32 : 0, ticker, days_in_bands, data[0]->close, bb_data[0], narrowest, widest);
 	}
 
 	return ret;
@@ -1316,30 +1259,27 @@ bool bbands_narrow(char *ticker, struct stock *data, long rows)
 /**
  * Find stocks near their 52-week low.
  */
-void low52wk(char *ticker, struct stock *data, long rows)
+void low52wk(const char *ticker, const stockinfo &data)
 {
 	low low;
 	high high;
-	double low52, high52, close, amount;
-	struct stock *weekly;
-	bool list = false;
-	long x, w_rows;
+	double low52, high52, close;
 
-	close = data[0].close;
-	low52 = low.find(data, rows, 251);
-	high52 = high.find(data, rows, 251);
+	close = data[0]->close;
+	low52 = low.find(data, 251);
+	high52 = high.find(data, 251);
 
 	if ((low52 == 0) || (high52 == 0))
 	{
 		if (verbose)
-			printf("%s, %s: close = %.2f, low52 = %.2f, high52 = %.2f\n", data[0].date, ticker, close, low52, high52);
+			printf("%s, %s: close = %.2f, low52 = %.2f, high52 = %.2f\n", data[0]->date, ticker, close, low52, high52);
 		/*delist(ticker);*/
 		return;
 	}
 
 	/* 15% */
 	if (close < (low52 + ((high52 - low52) * 0.15)))
-		printf("%s, %s: close = %.2f, low52 = %.2f, high52 = %.2f, range = %.2f\n", data[0].date, ticker, close, low52, high52, high52 - low52);
+		printf("%s, %s: close = %.2f, low52 = %.2f, high52 = %.2f, range = %.2f\n", data[0]->date, ticker, close, low52, high52, high52 - low52);
 
 	return;
 }
@@ -1351,66 +1291,65 @@ void low52wk(char *ticker, struct stock *data, long rows)
  * 4. Buy Call at $.05?
  * 5. Profit???
  */
-void test_screener(char *ticker, struct stock *data, long rows)
+void test_screener(const char *ticker, const stockinfo &data)
 {
 	simple_moving_average sma;
 	bollinger bb;
 	double *sma_data = NULL, *bb_data = NULL;
-	long x;
 
-	sma_data = sma.generate(data, rows, 20, rows - 26);
-	bb_data = bb.bands(data, rows, 20, 2, rows - 26);
+	sma_data = sma.generate(data, 20, data.length() - 26);
+	bb_data = bb.bands(data, 20, 2, data.length() - 26);
 
 	// TODO: Generalize me. Something like ./rsiscan '(volume > 100000) && (bb_top_daily < last_trade)'.
-	if (average_volume(data, rows) < 500000)
+	if (average_volume(data) < 500000)
 	{
 		if (verbose)
-			printf("%s, %s: Ignored for low volume.\n", data[0].date, ticker);
+			printf("%s, %s: Ignored for low volume.\n", data[0]->date, ticker);
 		return;
 	}
 
 	if (!sma_data || !sma_data[0])
 	{
 		if (verbose)
-			printf("%s, %s: Ignored because we have no SMA.\n", data[0].date, ticker);
+			printf("%s, %s: Ignored because we have no SMA.\n", data[0]->date, ticker);
 		return;
 	}
 
-	if ((data[0].close > sma_data[0] + bb_data[0]) && (data[2].close > sma_data[2] + bb_data[2]))
+	if ((data[0]->close > sma_data[0] + bb_data[0]) && (data[2]->close > sma_data[2] + bb_data[2]))
 	{
-		printf("%s, %s: Above Bollinger Bands (Close: %.02f, SMA: %.02f, BB: %.02f, volume: %li).\n", data[0].date, ticker, data[0].close, sma_data[0], bb_data[0], data[0].volume);
+		printf("%s, %s: Above Bollinger Bands (Close: %.02f, SMA: %.02f, BB: %.02f, volume: %li).\n", data[0]->date, ticker, data[0]->close, sma_data[0], bb_data[0], data[0]->volume);
 	}
-	else if (data[0].close < sma_data[0] - bb_data[0])
+	else if (data[0]->close < sma_data[0] - bb_data[0])
 	{
-		printf("%s, %s: Below Bollinger Bands (Close: %.02f, SMA: %.02f, BB: %.02f, volume: %li).\n", data[0].date, ticker, data[0].close, sma_data[0], bb_data[0], data[0].volume);
+		printf("%s, %s: Below Bollinger Bands (Close: %.02f, SMA: %.02f, BB: %.02f, volume: %li).\n", data[0]->date, ticker, data[0]->close, sma_data[0], bb_data[0], data[0]->volume);
 	}
 }
 
 /* Print our analysis of the stock */
-void analyze(char *ticker, struct stock *data, long rows)
+void analyze(const char *ticker, stockinfo data)
 {
 	relative_strength_index rsi;
 	double amount, *daily_rsi, *weekly_rsi;
-	struct stock *weekly;
+	stockinfo weekly;
 	bool list = false;
-	long x, w_rows;
+	//long w_rows;
 
-	daily_rsi = rsi.generate(data, rows, 14, 1);
+	daily_rsi = rsi.generate(data, 14, 1);
 
 	/* delisted or bought out */
 	if ((*daily_rsi == 0) || (*daily_rsi == 100))
 	{
 		if (verbose)
-			printf("%s, %s: rsi = %f\n", data[0].date, ticker, *daily_rsi);
+			printf("%s, %s: rsi = %f\n", data[0]->date, ticker, *daily_rsi);
 		delist(ticker);
 		return;
 	}
 
-	weekly = make_weekly(data, rows, &w_rows);
-	weekly_rsi = rsi.generate(weekly, w_rows, 14, 12);
+	weekly = data.weekly();
+	weekly_rsi = rsi.generate(weekly, 14, 12);
 
 	/* Decide whether to show the stock or not */
-	amount = (data[0].close - data[1].close) / data[0].close * 100;
+	amount = (data[0]->close - data[1]->close) / data[0]->close * 100;
 	if ((percent > 0) && (amount >= percent))
 		list = true;
 
@@ -1418,9 +1357,9 @@ void analyze(char *ticker, struct stock *data, long rows)
 		list = true;
 	if ((*weekly_rsi < 30) || (*weekly_rsi > 70))
 		list = true;
-	if (chart_patterns(data, rows, false, NULL))
+	if (chart_patterns(data, false, NULL))
 		list = true;
-	if (chart_patterns(weekly, w_rows, false, NULL))
+	if (chart_patterns(weekly, false, NULL))
 		list = true;
 
 	/* If so, spit out what we noticed */
@@ -1429,11 +1368,11 @@ void analyze(char *ticker, struct stock *data, long rows)
 		if (percent > 0)
 		{
 			if (amount > percent)
-				printf("data[0].date, %+.2f: %s\n", data[0].date, amount, ticker);
+				printf("%s, %+.2f: %s\n", data[0]->date, amount, ticker);
 		}
 		else
 		{
-			printf("%s, %s:\n", data[0].date, ticker);
+			printf("%s, %s:\n", data[0]->date, ticker);
 			if (*daily_rsi < 30)
 				printf("\tDaily RSI: %03.2f < 30\n", *daily_rsi);
 			else if (*daily_rsi > 70)
@@ -1443,12 +1382,11 @@ void analyze(char *ticker, struct stock *data, long rows)
 			else if (*weekly_rsi > 70)
 				printf("\tWeekly RSI: %03.2f > 70\n", *weekly_rsi);
 
-			chart_patterns(data, rows, true, "daily");
-			chart_patterns(weekly, w_rows, true, "weekly");
+			chart_patterns(data, true, "daily");
+			chart_patterns(weekly, true, "weekly");
 		}
 	}
 
-	free(weekly);
 	free(daily_rsi);
 	free(weekly_rsi);
 
@@ -1464,7 +1402,7 @@ void analyze(char *ticker, struct stock *data, long rows)
  * @param reset_low How far back do we go before we stop checking for additional lows?
  * @param pos - NULL => Ignored. 0 => Return location we found. +/- => Try to find a divergence near pos.
  */
-int divergence(double *values, long rows, long reset_high, long reset_low, long *pos)
+int divergence(const double *values, long rows, long reset_high, long reset_low, long *pos)
 {
 	int ret = IGNORED;
 	bool matches_direction;
@@ -1515,43 +1453,48 @@ int divergence(double *values, long rows, long reset_high, long reset_low, long 
 	return ret;
 }
 
-bool chart_patterns(struct stock *data, long rows, bool print, const char *period)
+bool chart_patterns(const stockinfo &data, bool print, const char *period)
 {
-	struct tm last;
+	//struct tm last;
 	bool ret = false;
-	double high, low;
-	time_t old, now;
-	long x;
+	//double high, low;
+	//time_t old, now;
+	//long x;
+	//long rows = data.length();
 
-	if (data[0].high != data[0].low)
+	if (!data.length()) {
+		return ret;
+	}
+
+	if (data[0]->high != data[0]->low)
 	{
-		if (data[0].close == data[0].open == data[0].high)
+		if (data[0]->close == data[0]->open == data[0]->high)
 		{
 			if (!print)
 			       return true;
-			printf("\t%s: Dragonfly on the %s (high = open = close)!\n", data[0].date, period);
+			printf("\t%s: Dragonfly on the %s (high = open = close)!\n", data[0]->date, period);
 		}
-		else if (data[0].close == data[0].open == data[0].low)
+		else if (data[0]->close == data[0]->open == data[0]->low)
 		{
 			if (!print)
 				return true;
-			printf("\t%s, Tombstone on the %s (low = open = close)!\n", data[0].date, period);
+			printf("\t%s, Tombstone on the %s (low = open = close)!\n", data[0]->date, period);
 		}
 	}
 
 	/*time(&now);
 
-	high = data[0].high;
-	low = data[0].low;
+	high = data[0]->high;
+	low = data[0]->low;
 	for (x = 1; x < rows; x++)
 	{
 		last.tm_hour = 0;
 		last.tm_min = 0;
 		last.tm_sec = 1;
 		last.tm_isdst = -1;
-		if (!strptime(data[x].date, "%Y-%m-%d", &last))
+		if (!strptime(data[x]->date, "%Y-%m-%d", &last))
 		{
-			if (!strptime(data[x].date, "%d-%B-%y", &last))
+			if (!strptime(data[x]->date, "%d-%B-%y", &last))
 			{
 				high = low = -1;
 				break;
@@ -1566,9 +1509,9 @@ bool chart_patterns(struct stock *data, long rows, bool print, const char *perio
 
 		if (difftime(now, old) < 31536000)
 		{
-			if (data[x].high > high)
+			if (data[x]->high > high)
 				high = -1;
-			if (data[x].low < low)
+			if (data[x]->low < low)
 				low = -1;
 		}
 
@@ -1580,13 +1523,13 @@ bool chart_patterns(struct stock *data, long rows, bool print, const char *perio
 	{
 		if (!print)
 			return true;
-		printf("\t%s, 52-week low: $%d\n", data[0].date, low);
+		printf("\t%s, 52-week low: $%d\n", data[0]->date, low);
 	}
 	if (high > 0)
 	{
 		if (!print)
 			return true;
-		printf("\t%s, 52-week high: $%d\n", data[0].date, high);
+		printf("\t%s, 52-week high: $%d\n", data[0]->date, high);
 	}*/
 
 	return ret;

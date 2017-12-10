@@ -6,12 +6,10 @@
 class http
 {
 public:
-	bool yahoo_bug;
-	http() { yahoo_bug = false; };
-	char *retrieve(char *server, char *path);
+	char *retrieve(const char *server, const char *path);
 
 private:
-	int connect(char *server, int port = 80);
-	void send_request(FILE *wr, char *server, char *path);
+	int connect(const char *server, int port = 80);
+	void send_request(FILE *wr, const char *server, const char *path);
 	char *retrieve_data(FILE *re);
 };

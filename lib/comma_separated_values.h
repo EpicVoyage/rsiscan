@@ -3,5 +3,5 @@
 class comma_separated_values
 {
 public:
-	struct stock *parse(char *block, long *rows);
+	struct stock *parse(const char *block, long *rows);
 };

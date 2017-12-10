@@ -2,10 +2,11 @@
 #include "lib/stats/exponential_moving_average.h"
 
 /* Loop through data and create a exponential moving average */
-double *exponential_moving_average::generate(struct stock *data, long rows, int period, long count)
+double *exponential_moving_average::generate(const stockinfo &data, int period, long count)
 {
 	double alpha, ema, *ret;
 	int row, start;
+	long rows = data.length();
 
 	if ((count <= 0) || (rows <= period + 1))
 	{
@@ -20,10 +21,10 @@ double *exponential_moving_average::generate(struct stock *data, long rows, int 
 	alpha = 2.0 / (period + 1);
 	start = (period + count < rows) ? period + count : rows - 1;
 
-	ema = data[start].close;
+	ema = data[start]->close;
 	for (row = start - 1; row >= 0; row--)
 	{
-		ema = alpha * data[row].close + (1 - alpha) * ema;
+		ema = alpha * data[row]->close + (1 - alpha) * ema;
 		if (row < start - period)
 			ret[row] = ema;
 
@@ -33,7 +34,7 @@ double *exponential_moving_average::generate(struct stock *data, long rows, int 
 }
 
 /* Loop through data and create a exponential moving average */
-double *exponential_moving_average::generate_d(double *data, long rows, int period, long count)
+double *exponential_moving_average::generate_d(const double *data, long rows, int period, long count)
 {
 	double alpha, ema, *ret;
 	int row, start;

@@ -1,2 +1,6 @@
+tests/runall
+librsiscan.so
 rsiscan
+.DS_Store
+*.o
 *~

@@ -3,5 +3,5 @@
 class simple_moving_average
 {
 	public:
-		double *generate(struct stock *data, long rows, int period = 20, long count = 0);
+		double *generate(const stockinfo &data, int period = 20, long count = 0);
 };

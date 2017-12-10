@@ -1,10 +1,11 @@
 #include <stdlib.h>
 #include "lib/stats/relative_strength_index.h"
 
-double *relative_strength_index::generate(struct stock *data, long rows, int period, long count)
+double *relative_strength_index::generate(const stockinfo &data, int period, long count)
 {
 	double change, ag, al, up, down, gains = 0, losses = 0;
 	double prev_gain = 0, prev_loss = 0, rs, rsi = 0, *ret;
+	long rows = data.length();
 	int row, start;
 
 	if ((count <= 0) || (rows <= period + 1))
@@ -21,7 +22,7 @@ double *relative_strength_index::generate(struct stock *data, long rows, int per
 
 	for (row = start - 1; row >= 0; row--)
 	{
-		change = data[row].close - data[row + 1].close;
+		change = data[row]->close - data[row + 1]->close;
 		if (change < 0)
 		{
 			down = -change;
@@ -51,7 +52,7 @@ double *relative_strength_index::generate(struct stock *data, long rows, int per
 
 		if (row <= start - period)
 		{
-			change = data[row + period - 1].close - data[row + period].close;
+			change = data[row + period - 1]->close - data[row + period]->close;
 			if (change < 0)
 				losses += change;
 			else
