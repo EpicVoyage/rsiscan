@@ -7,7 +7,7 @@ TEST_CASE("Load goog.csv", "[stockinfo,csv]") {
 	bool success;
 
 	// @todo Fix filename.
-	success = si.load_csv("/Users/chris/.daga/rsiscan/data/goog.csv");
+	success = si.load_csv("/Users/chris/.rsiscan/data/goog.csv");
 
 	// Valid test cases.
 	REQUIRE(success == true);

@@ -42,6 +42,7 @@
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/log/utility/setup/common_attributes.hpp>
 #include "lib/config.h"
+#include "lib/rsiscript.h"
 #include "lib/http.h"
 #include "lib/comma_separated_values.h"
 #include "lib/stock.h"
@@ -519,9 +520,10 @@ void update_tickers()
 	double res, movement1, movement2;
 	simple_moving_average sma;
 	struct dirent *file;
+	rsiscript rs;
 	DIR *saved;
 	char *tmp, *filename;
-	const char *result;
+	std::string result;
 
 	if (save_config && (!conf.tickers.size()))
 	{
@@ -584,8 +586,8 @@ void update_tickers()
 					printf("**%s**\n", data[0]->date);
 
 				if (script != nullptr) {
-					result = exec_script(script, data);
-					res = atof(result);
+					result = rs.parse(script, data);
+					res = atof(result.c_str());
 
 					if (res) {
 						printf("%s: Matches.\n", conf.tickers[x]);
@@ -1426,209 +1428,6 @@ bool chart_patterns(const stockinfo &data, bool print, const char *period)
 	}*/
 
 	return ret;
-}
-
-template<typename T>
-std::string exec_script_calculate_operation(const T val1, const T val2, char operation) {
-	double res;
-	T result;
-
-	switch(operation) {
-		case '*':
-		case 'x':
-			result = val1 * val2;
-			break;
-		case '/':
-			res = (double)val1 / (double)val2;
-			break;
-		case '+':
-			result = val1 + val2;
-			break;
-		case '-':
-			result = val1 - val2;
-			break;
-		case '^':
-			result = pow(val1, val2);
-			break;
-		case '%':
-			result = remainder(val1, val2);
-			break;
-		default:
-			result = 0;
-			BOOST_LOG_TRIVIAL(error) << "Unknown script operation: " << operation;
-	}
-
-	return (operation == '/') ? std::to_string(res) : std::to_string(result);
-}
-
-std::string exec_script_operations(const std::string &script, const char *operators) {
-	const std::size_t sc_len = script.length();
-	const char digits[] = "0123456789.";
-	std::size_t x, start, operation, end;
-	bool calc_end, calc_start = false;
-	long num1l, num2l;
-	double num1d, num2d;
-	std::string ret = script, result, num1str, num2str;
-
-	for (x = 0; x < sc_len; x++) {
-		/**
-		 * This logic assumes well-formed expressions: 4+(*1+2) => 4+*3 => 4+3 => 7.
-		 */
-
-		// Ignore space and tab characters.
-		if (ret[x] == 0x20 || ret[x] == 0x09 || ret[x] == 0x0b)
-			continue;
-
-		// Mark the beginning of numbers as we work through the string.
-		if (!calc_start && (strchr(digits, ret[x]) != NULL)) {
-			calc_start = true;
-			start = x;
-		}
-		// After we find a number, find an operation.
-		else if (calc_start && (strchr(operators, ret[x]) != NULL)) {
-			operation = x;
-			calc_end = false;
-
-			// Is there another number after the operator?
-			for (x++; x < sc_len; x++) {
-				if (strchr(digits, ret[x]) != NULL) {
-					calc_end = true;
-					break;
-				}
-			}
-
-			// If we found another number...
-			if (calc_end) {
-				// Find the end of the number;
-				end = sc_len;
-				for (x++; x < sc_len; x++) {
-					if (strchr(digits, ret[x]) == NULL) {
-						end = x;
-						break;
-					}
-				}
-
-				// Pull this expression apart.
-				num1str = ret.substr(start, operation - start);
-				num2str = ret.substr(operation + 1, end - operation + 1);
-
-				BOOST_LOG_TRIVIAL(trace) << "Script operation: " << num1str << ", " << ret[operation] << ", " << num2str;
-
-				// If this is a long/integer operation
-				if ((num1str.find(".") == std::string::npos) && (num2str.find(".") == std::string::npos)) {
-					num1l = atol(num1str.c_str());
-					num2l = atol(num2str.c_str());
-
-					result = exec_script_calculate_operation(num1l, num2l, ret[operation]);
-				} else {
-					num1d = atof(num1str.c_str());
-					num2d = atof(num2str.c_str());
-
-					result = exec_script_calculate_operation(num1d, num2d, ret[operation]);
-				}
-
-				ret.replace(start, end - start + 1, result);
-				x -= ((end - start) - result.length());
-			} // End calculation.
-
-			calc_start = false;
-		} // End operator section.
-	} // Next character.
-
-	return ret;
-}
-
-const std::string exec_script_calculate(const std::string &script) {
-	std::string ret;
-
-	BOOST_LOG_TRIVIAL(trace) << "Script chunk: " << script;
-
-	// Operational passes. The terminating 0's allow us to use string functions.
-	const char first_pass[] = {'^', 0};
-	const char second_pass[] = {'*', 'x', '/', '%', 0};
-	const char third_pass[] = {'+', '-', 0};
-
-	// Pass over the string three times to give us proper order of operation.
-	ret = exec_script_operations(script, first_pass);
-	ret = exec_script_operations(ret, second_pass);
-	ret = exec_script_operations(ret, third_pass);
-
-	BOOST_LOG_TRIVIAL(trace) << "Script chunk reduced: " << ret;
-
-	return ret;
-}
-
-/**
- * Parse a math-related script. This function pulls out sections in parenthesis and passes
- * them on to the next parsing step.
- *
- * @param const char *script [ex: (1+3)/(2 * (4 + 6))]
- * @return const char *result
- */
-int script_max_paren_depth = 50;
-const char *exec_script(const char* const script, const stockinfo &data) {
-	std::string repl, expr = script;
-	std::size_t pos, lparen_pos, rparen_pos = 0;
-	unsigned int lparens, rparens;
-	bool found = false;
-
-	if (script == nullptr)
-		return nullptr;
-
-	BOOST_LOG_TRIVIAL(trace) << "Script: " << script;
-	// TODO: Parse stock variables.
-
-	do {
-		// Search for a ')'.
-		pos = rparen_pos = expr.find(")", rparen_pos);
-		found = (rparen_pos != std::string::npos);
-
-		// Find the matching '('.
-		if (found) {
-			rparens = 1;
-			lparens = 0;
-
-			while (pos > 0) {
-				pos--;
-
-				if (expr[pos] == ')') // TODO: Should not be possible.
-					rparens++;
-				else if (expr[pos] == '(') {
-					lparens++;
-
-					// Will only happen with a '(' find.
-					if (lparens == rparens) {
-						lparen_pos = pos;
-						break;
-					}
-				}
-
-				/*if (lparens > script_max_paren_depth) {
-					BOOST_LOG_TRIVIAL(error) << "Found too many opening parens: " << lparens;
-					printf("Found too many opening parens: %iu\n", lparens);
-					return nullptr;
-				}*/
-			}
-
-			// ERROR: Mismatched parenthesis.
-			if (rparens != lparens) {
-				BOOST_LOG_TRIVIAL(error) << "Parenthesis mismatch: " << script;
-				printf("ERROR: Parenthesis mismatch: %s\n", script);
-				return nullptr;
-			}
-
-			// Parse the substring. Do not include the current parenthesis set.
-			repl = exec_script(expr.substr(lparen_pos + 1, rparen_pos - lparen_pos - 1).c_str(), data);
-			repl = exec_script_calculate(repl);
-			expr.replace(lparen_pos, rparen_pos - lparen_pos + 1, repl);
-
-			rparen_pos -= (rparen_pos - lparen_pos - repl.length());
-		}
-	} while (found);
-
-	expr = exec_script_calculate(expr);
-
-	return expr.c_str();
 }
 
 char *topo_get_list(int which)
