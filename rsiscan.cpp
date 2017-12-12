@@ -31,14 +31,17 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <string.h>
 #include <netdb.h>
 #include <errno.h>
 #include <ctype.h>
+#include <string>
 #include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/log/expressions.hpp>
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/log/utility/setup/common_attributes.hpp>
+#include "lib/config.h"
 #include "lib/http.h"
 #include "lib/comma_separated_values.h"
 #include "lib/stock.h"
@@ -90,11 +93,8 @@ void create_config();
 void create_dir(char *path);
 void read_args(int argc, char **argv);
 void print_help(const char *prog);
-void cleanup();
 
 /* 1.2 - Get/Save/Read stock data (cache) */
-char *get_filename(const char *ticker);
-void delist(const char *ticker);
 char *download_eod_data(const char *ticker, time_t from);
 //char *download_intraday_data();
 //void intraday_request(FILE *out);
@@ -118,13 +118,14 @@ void test_screener(const char *ticker, const stockinfo &data);
 void analyze(const char *ticker, const stockinfo data);
 int divergence(const double *values, long rows, long reset_high, long reset_low, long *pos = NULL);
 bool chart_patterns(const stockinfo &data, bool print, const char *period);
+const char *exec_script(const char* const script, const stockinfo &data);
 
 /* Global variables */
 bool verbose, save_config, offline, intraday, walk_back, find_divergence, find_tails, low52, narrow_bbands, test;
-char *home, *stock_dir, *old_dir, *list_dir, *config_dir, **tickers;
 int percent, seconds;
-long ticker_count;
 enum server source;
+char *script;
+config conf;
 
 /*****************************
  * 1.0 - Program entry point
@@ -133,15 +134,9 @@ int main(int argc, char **argv)
 {
 	verbose = intraday = false;
 
-	ticker_count = -1;
 	percent = 0;
 
-	config_dir = NULL;
-	list_dir = NULL;
-	old_dir = NULL;
-	stock_dir = NULL;
-	tickers = (char **)malloc(sizeof(char *));
-	tickers[0] = NULL;
+	script = nullptr;
 	offline = false;
 	walk_back = false;
 	low52 = false;
@@ -155,8 +150,8 @@ int main(int argc, char **argv)
 
 	// Configure log file output.
 	// TODO: Severity does not appear in the logs.
-	char *logfile = (char *)malloc(strlen(config_dir) + 13);
-	sprintf(logfile, "%s/rsiscan.log", config_dir);
+	char *logfile = (char *)malloc(strlen(conf.config_dir) + 13);
+	sprintf(logfile, "%s/rsiscan.log", (char *)conf.config_dir);
 	boost::log::add_common_attributes();
 	boost::log::expressions::attr< boost::log::trivial::severity_level >("Severity");
 	boost::log::add_file_log(
@@ -168,7 +163,6 @@ int main(int argc, char **argv)
 	read_args(argc, argv);
 	update_tickers();
 
-	cleanup();
 	free(logfile);
 
 	return 0;
@@ -181,50 +175,12 @@ int main(int argc, char **argv)
 void create_config()
 {
 	save_config = true;
-
-	home = getenv("HOME");
-	create_dir(home);
-
-	config_dir = (char *)malloc(strlen(home) + 10);
-	old_dir = (char *)malloc(strlen(home) + 14);
-	list_dir = (char *)malloc(strlen(home) + 16);
-	stock_dir = (char *)malloc(strlen(home) + 15);
-
-	sprintf(config_dir, "%s/.rsiscan", home);
-	create_dir(config_dir);
-
-	sprintf(old_dir, "%s/old", config_dir);
-	create_dir(old_dir);
-
-	sprintf(list_dir, "%s/lists", config_dir);
-	create_dir(list_dir);
-
-	sprintf(stock_dir, "%s/data", config_dir);
-	create_dir(stock_dir);
-
-	return;
-}
-
-/* Attempt to create a directory. If we fail, don't try to save data */
-void create_dir(char *path)
-{
-	struct stat buf;
-
-	if ((save_config) && (stat(path, &buf)))
-	{
-		if (mkdir(path, S_IRWXU))
-		{
-			fprintf(stderr, "Error creating directory: %s\n", path);
-			save_config = false;
-		}
-	}
-
-	return;
 }
 
 /* Parse command line options */
 void read_args(int argc, char **argv)
 {
+	char *filename;
 	int x;
 
 	for (x = 1; x < argc; x++)
@@ -257,12 +213,14 @@ void read_args(int argc, char **argv)
 			low52 = true;
 		else if (strcmp(argv[x], "--test") == 0)
 			test = true;
+		else if (strncmp(argv[x], "--script=", 9) == 0) {
+			script = argv[x] + 9;
+		}
 		else if (*argv[x] != '-')
 		{
-			ticker_count++;
-			tickers = (char **)realloc(tickers, (ticker_count + 1) * sizeof(char *));
-			tickers[ticker_count] = (char *)malloc(strlen(argv[x]) + 1);
-			strcpy(tickers[ticker_count], argv[x]);
+			filename = (char *)malloc(strlen(argv[x]) + 1);
+			strcpy(filename, argv[x]);
+			conf.tickers.push_back(filename);
 		}
 		else
 			print_help(argv[0]);
@@ -293,6 +251,7 @@ void print_help(const char *prog)
 	printf("    --walk       Walk back through the stock histories\n");
 	printf("    --low52      Stocks near their 52-week low\n");
 	printf("    --test       A test screener...\n");
+	printf("    --script=\"...\" For advanced, on-the-fly processing\n");
 	printf("    --divergence Look for divergences in the RSI, MACD, and MACD histogram\n");
 	printf("    --tails      Look for lows outside BB, with closes inside 3 out of 4 days\n");
 	printf("    --narrow-bbands Narrow Bollinger Bands.\n");
@@ -310,87 +269,7 @@ void print_help(const char *prog)
 	printf("simply tries to look for anomalies in large amounts of data, but is not\n");
 	printf("guaranteed to even do that. Use at your own risk.\n\n");
 
-	cleanup();
 	exit(0);
-}
-
-/* Free allocated global memory */
-void cleanup()
-{
-	long x;
-
-	if (config_dir != NULL)
-		free(config_dir);
-
-	if (old_dir != NULL)
-		free(old_dir);
-
-	if (list_dir != NULL)
-		free(list_dir);
-
-	if (stock_dir != NULL)
-		free(stock_dir);
-
-	if (tickers[0] != NULL)
-		for (x = 0; x <= ticker_count; x++)
-			free(tickers[x]);
-
-	free(tickers);
-
-	return;
-}
-
-char *get_filename(const char *ticker) {
-	char *tkr, *tmp, *filename;
-
-	tkr = (char *)malloc(strlen(ticker) + 1);
-	strcpy(tkr, ticker);
-	tmp = tkr;
-	while (*tmp)
-	{
-		*tmp = tolower(*tmp);
-		tmp++;
-	}
-	tmp = NULL;
-
-	filename = (char *)malloc(strlen(stock_dir) + strlen(tkr) + 6);
-	sprintf(filename, "%s/%s.csv", stock_dir, tkr);
-
-	return filename;
-}
-
-void delist(const char *ticker)
-{
-	char *filename, *tkr, *tmp;
-	struct stat buf;
-
-	if (!save_config)
-		return;
-
-	tkr = (char *)malloc(strlen(ticker) + 1);
-	strcpy(tkr, ticker);
-	tmp = tkr;
-	while ((*tmp = tolower(*tmp)))
-		tmp++;
-	tmp = NULL;
-
-	filename = (char *)malloc(strlen(stock_dir) + strlen(tkr) + 6);
-	sprintf(filename, "%s/%s.csv", stock_dir, tkr);
-
-	tmp = (char *)malloc(strlen(old_dir) + strlen(tkr) + 6);
-	sprintf(tmp, "%s/%s.csv", old_dir, tkr);
-
-
-	BOOST_LOG_TRIVIAL(trace) << "Removing stock data: " << filename;
-
-	if (stat(filename, &buf) == 0)
-		if (rename(filename, tmp) == -1)
-			fprintf(stderr, "Error moving %s to %s: %s\n", filename, tmp, strerror(errno));
-
-	free(filename);
-	free(tmp);
-
-	return;
 }
 
 /* Download End of Day ticker data */
@@ -417,7 +296,6 @@ char *download_eod_data(const char *ticker, time_t from)
 	if ((record = gethostbyname(i_servers[source])) == NULL)
 	{
 		fprintf(stderr, "DNS lookup for %s failed!\n", i_servers[source]);
-		cleanup();
 		exit(1);
 	}
 
@@ -428,7 +306,6 @@ char *download_eod_data(const char *ticker, time_t from)
 	if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1)
 	{
 		fprintf(stderr, "Failed to open a socket!\n");
-		cleanup();
 		exit(1);
 	}
 
@@ -451,7 +328,7 @@ char *download_eod_data(const char *ticker, time_t from)
 	*if ((ret != NULL) && (strcasestr(ret, "Sorry, the page you requested was not found.")))
 	{
 		printf("Error: %s - No data found, delisting stock\n", ticker);
-		delist(ticker);
+		conf.delist(ticker);
 		free(ret);
 		ret = NULL;
 	}*
@@ -490,12 +367,12 @@ char *get_path(const char *ticker, time_t from) {
 {
 	long x, stop;
 
-	stop = (ticker_count < 100) ? ticker_count : 100;
+	stop = (conf.tickers.size() < 100) ? conf.tickers.size() : 100;
 	if (source == yahoo)
 	{
 		fprintf(out, "GET /d/quotes.csv?");
 		for (x = 0; x <= stop; x++)
-			fprintf(out, "s=%s&", tickers[x]);
+			fprintf(out, "s=%s&", conf.tickers[x]);
 		fprintf(out, "f=sd1ohgl1v&e=.csv HTTP/1.1\r\n");
 	}
 	else
@@ -638,24 +515,28 @@ void update_tickers()
 	bool diverge_daily, diverge_weekly, found_setup, cont;
 	moving_average_convergence_divergence macd;
 	double *sma5 = nullptr, *macd_h = nullptr;
-	int direction1, direction2;
-	double movement1, movement2;
+	int len, direction1, direction2;
+	double res, movement1, movement2;
 	simple_moving_average sma;
 	struct dirent *file;
 	DIR *saved;
-	char *tmp;
+	char *tmp, *filename;
+	const char *result;
 
-	if ((save_config) && (tickers[0] == NULL))
+	if (save_config && (!conf.tickers.size()))
 	{
-		if ((saved = opendir(stock_dir)) == NULL)
+		if ((saved = opendir(conf.stock_dir)) == NULL)
 		{
-			fprintf(stderr, "Error opening %s: %s\n", stock_dir, strerror(errno));
+			fprintf(stderr, "Error opening %s: %s\n", (char *)conf.stock_dir, strerror(errno));
 			return;
 		}
 
 		while ((file = readdir(saved)))
 		{
-			if (*(file->d_name) == '.')
+			len = strlen(file->d_name);
+			len = len > 4 ? len - 4 : 0;
+
+			if (strcasecmp(file->d_name + len, ".csv") != 0)
 				continue;
 
 			tmp = file->d_name;
@@ -666,10 +547,9 @@ void update_tickers()
 			}
 			*tmp = 0;
 
-			ticker_count++;
-			tickers = (char **)realloc(tickers, (ticker_count + 1) * sizeof(char *));
-			tickers[ticker_count] = (char *)malloc(strlen(file->d_name) + 1);
-			strcpy(tickers[ticker_count], file->d_name);
+			filename = (char *)malloc(strlen(file->d_name) + 1);
+			strcpy(filename, file->d_name);
+			conf.tickers.push_back(filename);
 		}
 
 		closedir(saved);
@@ -679,12 +559,12 @@ void update_tickers()
 	//	download_intraday_data();
 
 	if (verbose)
-		printf("%li tickers loaded.\n", ticker_count);
+		printf("%li tickers loaded.\n", conf.tickers.size());
 
-	for (x = 0; x <= ticker_count; x++)
+	for (x = 0; x < conf.tickers.size(); x++)
 	{
 		// Load the ticker data and remember our spot.
-		stockinfo data = load_ticker(tickers[x]); //, &data, &rows);
+		stockinfo data = load_ticker(conf.tickers[x]); //, &data, &rows);
 		all_data = data;
 		all_rows = rows;
 		rows = data.length();
@@ -703,6 +583,15 @@ void update_tickers()
 				if (walk_back && verbose)
 					printf("**%s**\n", data[0]->date);
 
+				if (script != nullptr) {
+					result = exec_script(script, data);
+					res = atof(result);
+
+					if (res) {
+						printf("%s: Matches.\n", conf.tickers[x]);
+					}
+				}
+
 				vol = average_volume(data);
 				if (find_divergence)
 				{
@@ -711,33 +600,33 @@ void update_tickers()
 					if (((*macd_h > 0) && (macd_h[1] < 0)) || ((*macd_h < 0) && (macd_h[1] > 0))) {
 						divergence_data = data;
 						divergence_data.shift();
-						diverge(tickers[x], divergence_data, "MACD x-over after daily");
+						diverge(conf.tickers[x], divergence_data, "MACD x-over after daily");
 					}
 
-					diverge_daily = diverge(tickers[x], data, "potential daily");
+					diverge_daily = diverge(conf.tickers[x], data, "potential daily");
 
 					weekly_data = data.weekly();
-					diverge_weekly = diverge(tickers[x], weekly_data, "potential weekly");
+					diverge_weekly = diverge(conf.tickers[x], weekly_data, "potential weekly");
 
 					found_setup = (diverge_daily || diverge_weekly);
 					if (diverge_daily && diverge_weekly)
-						printf("\n%s, %s: Daily and Weekly triple divergence!\n\n", data[0]->date, tickers[x]);
+						printf("\n%s, %s: Daily and Weekly triple divergence!\n\n", data[0]->date, conf.tickers[x]);
 
 					if (macd_h)
 						free(macd_h);
 				}
 				else if (find_tails)
-					tails(tickers[x], data);
+					tails(conf.tickers[x], data);
 				else if (low52)
-					low52wk(tickers[x], data);
+					low52wk(conf.tickers[x], data);
 				else if (narrow_bbands)
-					found_setup = bbands_narrow(tickers[x], data);
+					found_setup = bbands_narrow(conf.tickers[x], data);
 				else if (test)
-					test_screener(tickers[x], data);
+					test_screener(conf.tickers[x], data);
 				else if (vol > 1000000)
-					analyze(tickers[x], data);
+					analyze(conf.tickers[x], data);
 				else if (verbose)
-					printf("%s, %s: volume = %li\n", data[0]->date, tickers[x], vol);
+					printf("%s, %s: volume = %li\n", data[0]->date, conf.tickers[x], vol);
 
 				// TODO?: There are more efficient ways to do this than to re-run the full test for every day.
 				if (walk_back && (rows > 100))
@@ -809,7 +698,7 @@ void update_tickers()
 		}
 		else
 		{
-			printf("Failed to load stock: %s\n", tickers[x]);
+			printf("Failed to load stock: %s\n", conf.tickers[x]);
 		}
 	}
 
@@ -826,7 +715,7 @@ stockinfo load_ticker(const char *ticker) //, stock **data, long *rows)
 	long rows;
 	time_t from;
 
-	filename = get_filename(ticker);
+	filename = conf.get_filename(ticker);
 	if (!s.load_csv(filename)) {
 		if (offline || ((block = download_eod_data(ticker, 0)) == NULL))
 		{
@@ -986,6 +875,8 @@ long average_volume(const stockinfo &data, long n)
 
 /**
  * Bump the latest day/week from loaded stock data.
+ *
+ * @returns A new stockinfo object
  */
 stockinfo stock_bump_day(stockinfo &data)
 {
@@ -1275,7 +1166,7 @@ void low52wk(const char *ticker, const stockinfo &data)
 	{
 		if (verbose)
 			printf("%s, %s: close = %.2f, low52 = %.2f, high52 = %.2f\n", data[0]->date, ticker, close, low52, high52);
-		/*delist(ticker);*/
+		/*conf.delist(ticker);*/
 		return;
 	}
 
@@ -1343,7 +1234,7 @@ void analyze(const char *ticker, stockinfo data)
 	{
 		if (verbose)
 			printf("%s, %s: rsi = %f\n", data[0]->date, ticker, *daily_rsi);
-		delist(ticker);
+		conf.delist(ticker);
 		return;
 	}
 
@@ -1536,3 +1427,286 @@ bool chart_patterns(const stockinfo &data, bool print, const char *period)
 
 	return ret;
 }
+
+template<typename T>
+std::string exec_script_calculate_operation(const T val1, const T val2, char operation) {
+	double res;
+	T result;
+
+	switch(operation) {
+		case '*':
+		case 'x':
+			result = val1 * val2;
+			break;
+		case '/':
+			res = (double)val1 / (double)val2;
+			break;
+		case '+':
+			result = val1 + val2;
+			break;
+		case '-':
+			result = val1 - val2;
+			break;
+		case '^':
+			result = pow(val1, val2);
+			break;
+		case '%':
+			result = remainder(val1, val2);
+			break;
+		default:
+			result = 0;
+			BOOST_LOG_TRIVIAL(error) << "Unknown script operation: " << operation;
+	}
+
+	return (operation == '/') ? std::to_string(res) : std::to_string(result);
+}
+
+std::string exec_script_operations(const std::string &script, const char *operators) {
+	const std::size_t sc_len = script.length();
+	const char digits[] = "0123456789.";
+	std::size_t x, start, operation, end;
+	bool calc_end, calc_start = false;
+	long num1l, num2l;
+	double num1d, num2d;
+	std::string ret = script, result, num1str, num2str;
+
+	for (x = 0; x < sc_len; x++) {
+		/**
+		 * This logic assumes well-formed expressions: 4+(*1+2) => 4+*3 => 4+3 => 7.
+		 */
+
+		// Ignore space and tab characters.
+		if (ret[x] == 0x20 || ret[x] == 0x09 || ret[x] == 0x0b)
+			continue;
+
+		// Mark the beginning of numbers as we work through the string.
+		if (!calc_start && (strchr(digits, ret[x]) != NULL)) {
+			calc_start = true;
+			start = x;
+		}
+		// After we find a number, find an operation.
+		else if (calc_start && (strchr(operators, ret[x]) != NULL)) {
+			operation = x;
+			calc_end = false;
+
+			// Is there another number after the operator?
+			for (x++; x < sc_len; x++) {
+				if (strchr(digits, ret[x]) != NULL) {
+					calc_end = true;
+					break;
+				}
+			}
+
+			// If we found another number...
+			if (calc_end) {
+				// Find the end of the number;
+				end = sc_len;
+				for (x++; x < sc_len; x++) {
+					if (strchr(digits, ret[x]) == NULL) {
+						end = x;
+						break;
+					}
+				}
+
+				// Pull this expression apart.
+				num1str = ret.substr(start, operation - start);
+				num2str = ret.substr(operation + 1, end - operation + 1);
+
+				BOOST_LOG_TRIVIAL(trace) << "Script operation: " << num1str << ", " << ret[operation] << ", " << num2str;
+
+				// If this is a long/integer operation
+				if ((num1str.find(".") == std::string::npos) && (num2str.find(".") == std::string::npos)) {
+					num1l = atol(num1str.c_str());
+					num2l = atol(num2str.c_str());
+
+					result = exec_script_calculate_operation(num1l, num2l, ret[operation]);
+				} else {
+					num1d = atof(num1str.c_str());
+					num2d = atof(num2str.c_str());
+
+					result = exec_script_calculate_operation(num1d, num2d, ret[operation]);
+				}
+
+				ret.replace(start, end - start + 1, result);
+				x -= ((end - start) - result.length());
+			} // End calculation.
+
+			calc_start = false;
+		} // End operator section.
+	} // Next character.
+
+	return ret;
+}
+
+const std::string exec_script_calculate(const std::string &script) {
+	std::string ret;
+
+	BOOST_LOG_TRIVIAL(trace) << "Script chunk: " << script;
+
+	// Operational passes. The terminating 0's allow us to use string functions.
+	const char first_pass[] = {'^', 0};
+	const char second_pass[] = {'*', 'x', '/', '%', 0};
+	const char third_pass[] = {'+', '-', 0};
+
+	// Pass over the string three times to give us proper order of operation.
+	ret = exec_script_operations(script, first_pass);
+	ret = exec_script_operations(ret, second_pass);
+	ret = exec_script_operations(ret, third_pass);
+
+	BOOST_LOG_TRIVIAL(trace) << "Script chunk reduced: " << ret;
+
+	return ret;
+}
+
+/**
+ * Parse a math-related script. This function pulls out sections in parenthesis and passes
+ * them on to the next parsing step.
+ *
+ * @param const char *script [ex: (1+3)/(2 * (4 + 6))]
+ * @return const char *result
+ */
+int script_max_paren_depth = 50;
+const char *exec_script(const char* const script, const stockinfo &data) {
+	std::string repl, expr = script;
+	std::size_t pos, lparen_pos, rparen_pos = 0;
+	unsigned int lparens, rparens;
+	bool found = false;
+
+	if (script == nullptr)
+		return nullptr;
+
+	BOOST_LOG_TRIVIAL(trace) << "Script: " << script;
+	// TODO: Parse stock variables.
+
+	do {
+		// Search for a ')'.
+		pos = rparen_pos = expr.find(")", rparen_pos);
+		found = (rparen_pos != std::string::npos);
+
+		// Find the matching '('.
+		if (found) {
+			rparens = 1;
+			lparens = 0;
+
+			while (pos > 0) {
+				pos--;
+
+				if (expr[pos] == ')') // TODO: Should not be possible.
+					rparens++;
+				else if (expr[pos] == '(') {
+					lparens++;
+
+					// Will only happen with a '(' find.
+					if (lparens == rparens) {
+						lparen_pos = pos;
+						break;
+					}
+				}
+
+				/*if (lparens > script_max_paren_depth) {
+					BOOST_LOG_TRIVIAL(error) << "Found too many opening parens: " << lparens;
+					printf("Found too many opening parens: %iu\n", lparens);
+					return nullptr;
+				}*/
+			}
+
+			// ERROR: Mismatched parenthesis.
+			if (rparens != lparens) {
+				BOOST_LOG_TRIVIAL(error) << "Parenthesis mismatch: " << script;
+				printf("ERROR: Parenthesis mismatch: %s\n", script);
+				return nullptr;
+			}
+
+			// Parse the substring. Do not include the current parenthesis set.
+			repl = exec_script(expr.substr(lparen_pos + 1, rparen_pos - lparen_pos - 1).c_str(), data);
+			repl = exec_script_calculate(repl);
+			expr.replace(lparen_pos, rparen_pos - lparen_pos + 1, repl);
+
+			rparen_pos -= (rparen_pos - lparen_pos - repl.length());
+		}
+	} while (found);
+
+	expr = exec_script_calculate(expr);
+
+	return expr.c_str();
+}
+
+char *topo_get_list(int which)
+{
+	char *ret = NULL;
+
+	/* Possible lists in CSV format:
+	 * ********************************************
+	 * S&P 500:
+	 * http://www2.standardandpoors.com/app/Satellite?pagename=spcom/page/download&sectorid=%20%3E%20'00'&itemname=%3E=%20'1'&dt=01-AUG-2007&indexcode=500
+	 *
+	 * Australian Securities Exchange (ASX):
+	 * http://www.asx.com.au/asx/downloadCsv/ASXListedCompanies.csv
+	 *
+	 * New Zealand S. Exchange (NZX):
+	 * http://www.nzx.com/scripts/portal_pages/p_csv_by_market.csv?code=ALL&board_type=S
+	 *
+	 * American:
+	 * http://www.nasdaq.com//asp/symbols.asp?exchange=Q&start=0 (NASDAQ)
+	 * http://www.nasdaq.com//asp/symbols.asp?exchange=1&start=0 (Amex)
+	 * http://www.nasdaq.com//asp/symbols.asp?exchange=N&start=0 (NYSE)
+	 *
+	 * American Exchange (AMEX):
+	 * http://www.amex.com/equities/dataDwn/EQUITY_EODLIST_03AUG2007.csv
+	 *
+	 * Chicago Stock Exchange:
+	 * http://www.chx.com/content/Trading_Information/TI_tape_A.asp
+	 * http://www.chx.com/content/Trading_Information/TI_tape_B.asp
+	 * http://www.chx.com/content/Trading_Information/TI_tape_C.asp
+	 */
+
+	return ret;
+}
+
+/* Copy data out of stock structure into an array */
+/*double *topo_copyoutd(struct stock *data, long rows, int type)
+{
+	double *ret;
+	long x;
+
+	if ((rows < 0) || ((type != OPEN) && (type != HIGH) && (type != LOW) && (type != CLOSE)))
+		return NULL;
+
+	ret = (double *)malloc(rows * sizeof(double));
+
+	for (x = 0; x < rows; x++)
+	{
+		if (type == OPEN)
+			ret[x] = data[x].open;
+		else if (type == HIGH)
+			ret[x] = data[x].high;
+		else if (type == LOW)
+			ret[x] = data[x].low;
+		else if (type == CLOSE)
+			ret[x] = data[x].close;
+	}
+
+	return ret;
+}*/
+
+/* Copy data out of stock structure into an array */
+/*long *topo_copyoutl(struct stock *data, long rows, int type)
+{
+	long *ret;
+	long x;
+
+	if ((rows < 0) || ((type != DATE) && (type != VOLUME)))
+		return NULL;
+
+	ret = (long *)malloc(rows * sizeof(long));
+
+	for (x = 0; x < rows; x++)
+	{
+		if (type == DATE)
+			ret[x] = data[x].numeric;
+		else if (type == VOLUME)
+			ret[x] = data[x].volume;
+	}
+
+	return ret;
+}*/

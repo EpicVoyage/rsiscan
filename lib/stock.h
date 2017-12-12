@@ -17,6 +17,7 @@ struct stock {
 };
 
 class stockinfo {
+	friend class config;
 	public:
 		stockinfo(const stockinfo &init);
 		stockinfo(): orig_filename(nullptr), dirty(false) {};
