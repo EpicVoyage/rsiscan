@@ -18,6 +18,7 @@ std::string rsiscript::parse(const char* const script, const stockinfo &data) {
 	unsigned int lparens, rparens;
 	bool found = false;
 
+	last_variables.clear();
 	if (script == nullptr)
 		return err;
 
@@ -141,23 +142,35 @@ std::string rsiscript::variables(const std::string var, const stockinfo &data) {
 	std::string ret = "0";
 
 	if (var.compare("open") == 0) {
-		ret = std::to_string(data[0]->open);
+		ret = last_variable(var, data[0]->open);
 	}
 	else if (var.compare("high") == 0) {
-		ret = std::to_string(data[0]->high);
+		ret = last_variable(var, data[0]->high);
 	}
 	else if (var.compare("low") == 0) {
-		ret = std::to_string(data[0]->low);
+		ret = last_variable(var, data[0]->low);
 	}
 	else if (var.compare("close") == 0) {
-		ret = std::to_string(data[0]->close);
+		ret = last_variable(var, data[0]->close);
 	}
 	else if (var.compare("volume") == 0) {
-		ret = std::to_string(data[0]->volume);
+		ret = last_variable(var, data[0]->volume);
 	}
 	//else if (var.compare("rsi") == 0) {
 	//	ret = std::to_string(data[0]->high);
 	//}
+
+	return ret;
+}
+
+template<typename T>
+std::string rsiscript::last_variable(std::string name, T value) {
+	std::string ret = std::to_string(value);
+
+	if (last_variables.length()) {
+		last_variables += ", ";
+	}
+	last_variables += name + " = " + ret;
 
 	return ret;
 }

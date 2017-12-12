@@ -585,17 +585,18 @@ void update_tickers()
 				if (walk_back && verbose)
 					printf("**%s**\n", data[0]->date);
 
+				vol = average_volume(data);
+
 				if (script != nullptr) {
 					result = rs.parse(script, data);
 					res = atof(result.c_str());
 
 					if (res) {
-						printf("%s: Matches.\n", conf.tickers[x]);
+						// TODO: Explain why this matches.
+						printf("%5s: %s.\n", conf.tickers[x], rs.last_variables.c_str());
 					}
 				}
-
-				vol = average_volume(data);
-				if (find_divergence)
+				else if (find_divergence)
 				{
 					// TODO: Detect MACD cross-over signal after divergence ->
 					macd_h = macd.histogram(data, 12, 26, 9, rows - 26);
