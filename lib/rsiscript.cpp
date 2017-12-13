@@ -1,12 +1,20 @@
 #include <ctype.h>
+#include <algorithm>
 
 #include <boost/log/trivial.hpp>
 
+#include "lib/stats/relative_strength_index.h"
+#include "lib/stats/exponential_moving_average.h"
+#include "lib/stats/simple_moving_average.h"
+#include "lib/stats/bollinger.h"
 #include "lib/rsiscript.h"
 
 /**
- * Parse a math-related script. This function pulls out sections in parenthesis and passes
- * them on to the next parsing step.
+ * Parse a math-related script. There are several phases.
+ *
+ * 1. Replace variables.
+ * 2. Identify sections in parenthesis. Process these first.
+ * 3. Process the math equations/comparisons.
  *
  * @param const char *script [ex: (1+3)/(2 * (4 + 6))]
  * @return const char *result
@@ -18,6 +26,7 @@ std::string rsiscript::parse(const char* const script, const stockinfo &data) {
 	unsigned int lparens, rparens;
 	bool found = false;
 
+	last_variables_used.clear();
 	last_variables.clear();
 	if (script == nullptr)
 		return err;
@@ -49,12 +58,6 @@ std::string rsiscript::parse(const char* const script, const stockinfo &data) {
 						break;
 					}
 				}
-
-				/*if (lparens > script_max_paren_depth) {
-					BOOST_LOG_TRIVIAL(error) << "Found too many opening parens: " << lparens;
-					printf("Found too many opening parens: %iu\n", lparens);
-					return nullptr;
-				}*/
 			}
 
 			// ERROR: Mismatched parenthesis.
@@ -74,10 +77,15 @@ std::string rsiscript::parse(const char* const script, const stockinfo &data) {
 	} while (found);
 
 	expr = exec_script_calculate(expr);
-	BOOST_LOG_TRIVIAL(error) << "End of run: " << expr;
+	BOOST_LOG_TRIVIAL(info) << "End of run: " << expr;
 	return expr;
 }
 
+/**
+ * Find/replace the variables in our script.
+ *
+ * @return string
+ */
 std::string rsiscript::replace_variables(const std::string &script, const stockinfo &data) {
 	std::string expr = script;
 	std::string err = "0", repl;
@@ -138,8 +146,15 @@ std::string rsiscript::replace_variables(const std::string &script, const stocki
 	return expr;
 }
 
-std::string rsiscript::variables(const std::string var, const stockinfo &data) {
+/**
+ * Parse script variables into values.
+ *
+ * @return string The script without any more variables.
+ */
+std::string rsiscript::variables(const std::string &var, const stockinfo &data) {
 	std::string ret = "0";
+
+	// TODO: Parse options for stat variables. Weekly, monthly, RSI/SMA/EMA/BB/&c.
 
 	if (var.compare("open") == 0) {
 		ret = last_variable(var, data[0]->open);
@@ -156,25 +171,84 @@ std::string rsiscript::variables(const std::string var, const stockinfo &data) {
 	else if (var.compare("volume") == 0) {
 		ret = last_variable(var, data[0]->volume);
 	}
-	//else if (var.compare("rsi") == 0) {
-	//	ret = std::to_string(data[0]->high);
-	//}
-
-	return ret;
-}
-
-template<typename T>
-std::string rsiscript::last_variable(std::string name, T value) {
-	std::string ret = std::to_string(value);
-
-	if (last_variables.length()) {
-		last_variables += ", ";
+	else if (var.compare("rsi") == 0) {
+		relative_strength_index rsi;
+		double *rsi_data = rsi.generate(data, 14, data.length() - 26);
+		ret = last_variable(var, *rsi_data);
+		free(rsi_data);
 	}
-	last_variables += name + " = " + ret;
+	else if (var.compare("sma") == 0) {
+		simple_moving_average sma;
+		double *sma_data = sma.generate(data, 20, data.length() - 26);
+		ret = last_variable(var, *sma_data);
+		free(sma_data);
+	}
+	else if (var.compare("ema") == 0) {
+		simple_moving_average ema;
+		double *ema_data = ema.generate(data, 20, data.length() - 26);
+		ret = last_variable(var, *ema_data);
+		free(ema_data);
+	}
+	else if (var.compare("bb_top") == 0) {
+		simple_moving_average sma;
+		bollinger bb;
+		double *sma_data = sma.generate(data, 20, data.length() - 26);
+		double *bb_data = bb.bands(data, 14, data.length() - 26);
+		ret = last_variable(var, *sma_data + *bb_data);
+		free(sma_data);
+		free(bb_data);
+	}
+	else if (var.compare("bb_bottom") == 0) {
+		simple_moving_average sma;
+		bollinger bb;
+		double *sma_data = sma.generate(data, 20, data.length() - 26);
+		double *bb_data = bb.bands(data, 14, data.length() - 26);
+		ret = last_variable(var, *sma_data - *bb_data);
+		free(sma_data);
+		free(bb_data);
+	}
 
 	return ret;
 }
 
+/**
+ * Store name + value in last_variables.
+ *
+ * @param name
+ * @param value
+ * @return string value
+ */
+template<typename T>
+std::string rsiscript::last_variable(const std::string &name, T value) {
+	std::string ret = std::to_string(value);
+	bool add = !last_variables_used.size();
+
+	if (!add) {
+		add = std::find(last_variables_used.begin(), last_variables_used.end(), name) == last_variables_used.end();
+	}
+
+	if (add) {
+		if (last_variables.length()) {
+			last_variables += ", ";
+		}
+		last_variables += name + " = " + ret;
+		last_variables_used.push_back(name);
+	}
+
+	return ret;
+}
+
+/**
+ * Direct the order of operator usage.
+ *
+ * Phase 1: ^
+ * Phase 2: * / %
+ * Phase 3: + -
+ * Phase 4: > < =
+ * Phase 5: | &
+ *
+ * @return string The value calculated.
+ */
 const std::string rsiscript::exec_script_calculate(const std::string &script) {
 	std::string ret;
 
@@ -199,6 +273,11 @@ const std::string rsiscript::exec_script_calculate(const std::string &script) {
 	return ret;
 }
 
+/**
+ * Find numbers and their operators for direct calculation.
+ *
+ * @return string The calculated value(s).
+ */
 std::string rsiscript::exec_script_operations(const std::string &script, const char *operators) {
 	std::size_t sc_len = script.length();
 	const char digits[] = "0123456789.";
@@ -285,6 +364,11 @@ std::string rsiscript::exec_script_operations(const std::string &script, const c
 	return ret;
 }
 
+/**
+ * Takes two numeric (int/double) values and a comparison operator. Performs the required operation.
+ *
+ * @return int/double
+ */
 template<typename T>
 std::string rsiscript::exec_script_calculate_operation(const T val1, const T val2, char operation) {
 	double res;
@@ -330,5 +414,6 @@ std::string rsiscript::exec_script_calculate_operation(const T val1, const T val
 			BOOST_LOG_TRIVIAL(error) << "Unknown script operation: " << operation;
 	}
 
+	// Force (double) for division.
 	return (operation == '/') ? std::to_string(res) : std::to_string(result);
 }

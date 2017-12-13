@@ -112,20 +112,20 @@ long average_volume(const stockinfo &data, long n = 10);
 stockinfo stock_bump_day(stockinfo &data);
 bool diverge(const char *ticker, const stockinfo &data, const char *desc);
 double *stock_reduce_close(const stock *data, long rows);
-void tails(const char *ticker, const stockinfo &data);
+//void tails(const char *ticker, const stockinfo &data);
 bool bbands_narrow(const char *ticker, const stockinfo &data);
 void low52wk(const char *ticker, const stockinfo &data);
-void test_screener(const char *ticker, const stockinfo &data);
+//void test_screener(const char *ticker, const stockinfo &data);
 void analyze(const char *ticker, const stockinfo data);
 int divergence(const double *values, long rows, long reset_high, long reset_low, long *pos = NULL);
 bool chart_patterns(const stockinfo &data, bool print, const char *period);
 const char *exec_script(const char* const script, const stockinfo &data);
 
 /* Global variables */
-bool verbose, save_config, offline, intraday, walk_back, find_divergence, find_tails, low52, narrow_bbands, test;
+bool verbose, save_config, offline, intraday, walk_back, find_divergence, find_tails, low52, narrow_bbands; //, test;
 int percent, seconds;
 enum server source;
-char *script;
+char const *script;
 config conf;
 
 /*****************************
@@ -141,7 +141,7 @@ int main(int argc, char **argv)
 	offline = false;
 	walk_back = false;
 	low52 = false;
-	test = false;
+	//test = false;
 	find_tails = false;
 	narrow_bbands = false;
 	find_divergence = false;
@@ -207,13 +207,16 @@ void read_args(int argc, char **argv)
 		else if (strcmp(argv[x], "--divergence") == 0)
 			find_divergence = true;
 		else if (strcmp(argv[x], "--tails") == 0)
-			find_tails = true;
+			//find_tails = true;
+			// TODO: Check for 3-4 days?
+			script = "{bb_bottom} > {low} & {bb_bottom} < {close}";
 		else if (strcmp(argv[x], "--narrow-bbands") == 0)
 			narrow_bbands = true;
 		else if (strcmp(argv[x], "--low52") == 0)
 			low52 = true;
 		else if (strcmp(argv[x], "--test") == 0)
-			test = true;
+			//test = true;
+			script = "{vol} > 500000 & ({close} > {bb_top} | {close} < {bb_bottom})";
 		else if (strncmp(argv[x], "--script=", 9) == 0) {
 			script = argv[x] + 9;
 		}
@@ -261,9 +264,6 @@ void print_help(const char *prog)
 
 	printf("Tickers listed on the command line will be added to the local cache and used for\n");
 	printf("future runs when you don't specify any.\n\n");
-
-	printf("We automatically filter out stocks with an average trading volume under one\n");
-	printf("million shares per day over the past two weeks.\n\n");
 
 	printf("This program will perform an analysis on the stocks you specify. It is *NOT*\n");
 	printf("advice and should not be used in place of actually talking to your broker. It\n");
@@ -592,7 +592,6 @@ void update_tickers()
 					res = atof(result.c_str());
 
 					if (res) {
-						// TODO: Explain why this matches.
 						printf("%5s: %s.\n", conf.tickers[x], rs.last_variables.c_str());
 					}
 				}
@@ -618,18 +617,18 @@ void update_tickers()
 					if (macd_h)
 						free(macd_h);
 				}
-				else if (find_tails)
-					tails(conf.tickers[x], data);
+				//else if (find_tails)
+				//	tails(conf.tickers[x], data);
 				else if (low52)
 					low52wk(conf.tickers[x], data);
 				else if (narrow_bbands)
 					found_setup = bbands_narrow(conf.tickers[x], data);
-				else if (test)
-					test_screener(conf.tickers[x], data);
-				else if (vol > 1000000)
+				//else if (test)
+				//	test_screener(conf.tickers[x], data);
+				else //if (vol > 1000000)
 					analyze(conf.tickers[x], data);
-				else if (verbose)
-					printf("%s, %s: volume = %li\n", data[0]->date, conf.tickers[x], vol);
+				//else if (verbose)
+				//	printf("%s, %s: volume = %li\n", data[0]->date, conf.tickers[x], vol);
 
 				// TODO?: There are more efficient ways to do this than to re-run the full test for every day.
 				if (walk_back && (rows > 100))
@@ -1045,7 +1044,7 @@ bool diverge(const char *ticker, const stockinfo &data, const char *desc)
 /**
  * Find stocks which opened+closed inside Bollinger Bands, but which dipped below the bottom band.
  */
-void tails(const char *ticker, const stockinfo &data)
+/*void tails(const char *ticker, const stockinfo &data)
 {
 	simple_moving_average sma;
 	bollinger bb;
@@ -1092,7 +1091,7 @@ void tails(const char *ticker, const stockinfo &data)
 		free(bb_data);
 
 	return;
-}
+}*/
 
 /**
  * Narrow bollinger bands.
@@ -1187,7 +1186,7 @@ void low52wk(const char *ticker, const stockinfo &data)
  * 4. Buy Call at $.05?
  * 5. Profit???
  */
-void test_screener(const char *ticker, const stockinfo &data)
+/*void test_screener(const char *ticker, const stockinfo &data)
 {
 	simple_moving_average sma;
 	bollinger bb;
@@ -1219,7 +1218,7 @@ void test_screener(const char *ticker, const stockinfo &data)
 	{
 		printf("%s, %s: Below Bollinger Bands (Close: %.02f, SMA: %.02f, BB: %.02f, volume: %li).\n", data[0]->date, ticker, data[0]->close, sma_data[0], bb_data[0], data[0]->volume);
 	}
-}
+}*/
 
 /* Print our analysis of the stock */
 void analyze(const char *ticker, stockinfo data)
