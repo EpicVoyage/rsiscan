@@ -73,7 +73,7 @@ TEST_CASE("Manually build the data", "[stockinfo]") {
 TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 	stockinfo si, sj;
 	bool success;
-	struct stock s, t, u, v;
+	struct stock s, t, u, v, w;
 
 	// Create the first element.
 	s.date = (char *)malloc(11);
@@ -107,7 +107,7 @@ TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 
 	// Insert at the end by operator.
 	v.date = (char *)malloc(11);
-	strcpy(v.date, "2017-10-12");
+	strcpy(v.date, "2017-10-14");
 	v.open = 2;
 	v.high = 3;
 	v.low = 1;
@@ -115,15 +115,30 @@ TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 	v.volume = 4;
 	si += v;
 
+	// Insert at the end by operator.
+	w.date = (char *)malloc(11);
+	strcpy(w.date, "2017-10-15");
+	w.open = 15;
+	w.high = 23;
+	w.low = 15;
+	w.close = 23;
+	w.volume = 5;
+	si += w;
+
 	// Test = operator and weekly roll-up.
-	sj = si.weekly();
+	sj = si.weekly(true);
 
 	// Validate the data in our class.
-	REQUIRE(sj.length() == 1);
-	REQUIRE(sj[0]->open == 2);
-	REQUIRE(sj[0]->high == 7);
-	REQUIRE(sj[0]->low == 1);
-	REQUIRE(sj[0]->close == 3);
-	REQUIRE(sj[0]->volume == 10);
-	REQUIRE(sj[1] == nullptr);
+	REQUIRE(sj.length() == 2);
+	REQUIRE(sj[0]->open == 15);
+	REQUIRE(sj[0]->high == 23);
+	REQUIRE(sj[0]->low == 15);
+	REQUIRE(sj[0]->close == 23);
+	REQUIRE(sj[0]->volume == 5);
+	REQUIRE(sj[1]->open == 2);
+	REQUIRE(sj[1]->high == 7);
+	REQUIRE(sj[1]->low == 1);
+	REQUIRE(sj[1]->close == 3);
+	REQUIRE(sj[1]->volume == 10);
+	REQUIRE(sj[2] == nullptr);
 }

@@ -16,6 +16,8 @@ struct stock {
 	long volume;
 };
 
+enum timeperiods {day = 0, week = 1, month = 2, year = 3};
+
 class stockinfo {
 	friend class config;
 	public:
@@ -38,13 +40,19 @@ class stockinfo {
 		stockinfo &uniq();
 		stockinfo &sort();
 
-		stockinfo weekly();
+		template<class T>
+		stockinfo rollup_iterator(T &iterator, int number);
+		stockinfo rollup(int number = 1, timeperiods period = week, bool align_week = false);
+		stockinfo weekly(bool align_week = false);
 
 	private:
 		time_t parse_csv_time(const char *date);
 		void nosig();
 		void sig();
 		void copy(const stockinfo &s);
+
+		template<class T>
+		T &multi_decrement(T &iterator, int number = 1);
 
 		std::vector<struct stock> data;
 		char *orig_filename;

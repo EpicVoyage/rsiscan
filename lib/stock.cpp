@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <time.h>
 #include <algorithm>
+#include <chrono>
 
 #include <boost/log/trivial.hpp>
+#include <boost/date_time/gregorian/gregorian.hpp>
 
 #include "lib/comma_separated_values.h"
 #include "lib/stock.h"
@@ -299,41 +301,65 @@ stockinfo &stockinfo::sort() {
 }
 
 /**
- * Roll daily data up into weeks. Sorts the data first.
- *
- * @return New stockinfo object.
+ * NOTE: data must be sorted before this is called.
  */
-stockinfo stockinfo::weekly() {
-	bool add = false;
+template<class T>
+stockinfo stockinfo::rollup_iterator(T &iterator, int number) {
+	boost::gregorian::date d;
+	bool add = false, init = true;
 	struct stock tmp;
 	struct tm last;
 	long x, length;
 	stockinfo ret;
-	int wday = -1;
-
-	// This only works if the data is in order. It does not have to be unique...
-	sort();
+	boost::gregorian::date current_date;
 
 	length = data.size();
+	BOOST_LOG_TRIVIAL(info) << "Rollup size: " << length;
+
+	// Go back to the last [number iterator period] on record.
+	if (length > 0) {
+		localtime_r(&data[0].timestamp, &last);
+		current_date = boost::gregorian::date(last.tm_year + 1900, last.tm_mon + 1, last.tm_mday);
+		x = 0;
+		while (iterator > current_date) {
+			multi_decrement(iterator, number);
+			x++;
+		}
+
+		BOOST_LOG_TRIVIAL(info) << "First date is " << (x * number) << " periods back.";
+	}
+
+	// Loop through the dates and collect them.
 	for (x = 0; x < length; x++) {
 		localtime_r(&data[x].timestamp, &last);
-		if (last.tm_wday > wday) {
+		current_date = boost::gregorian::date(last.tm_year + 1900, last.tm_mon + 1, last.tm_mday);
+
+		// Is it time to switch to decrement the iterator?
+		if (iterator > current_date) {
+			BOOST_LOG_TRIVIAL(info) << "Decrement iterator.";
+			multi_decrement(iterator, number);
+			init = true;
+
 			// New week.
 			if (add)
 				ret += tmp;
+		}
 
+		if (init) {
 			// Re-set the object data for the new week..
 			tmp.open = data[x].open;
 			tmp.high = data[x].high;
 			tmp.low = data[x].low;
 			tmp.close = data[x].close;
 			tmp.volume = data[x].volume;
+			init = false;
 		} else {
 			// Update the existing week.
 			if (data[x].high > tmp.high)
 				tmp.high = data[x].high;
-			if (data[x].low < tmp.low)
+			if (data[x].low < tmp.low) {
 				tmp.low = data[x].low;
+			}
 			tmp.open = data[x].open;
 			tmp.volume += data[x].volume;
 		}
@@ -341,10 +367,6 @@ stockinfo stockinfo::weekly() {
 		// Capture the earliest day of the week.
 		tmp.timestamp = data[x].timestamp;
 		tmp.date = data[x].date;
-
-		// Track where we are in the week.
-		wday = last.tm_wday;
-		//free(last);
 
 		// Start saving after the first run.
 		add = true;
@@ -354,6 +376,77 @@ stockinfo stockinfo::weekly() {
 		ret += tmp;
 
 	return ret;
+}
+
+template<class T>
+T &stockinfo::multi_decrement(T &iterator, int number) {
+	for (int x = 0; x < number; x++) {
+		--iterator;
+	}
+
+	return iterator;
+}
+
+/**
+ * Roll daily data up into larger time periods. Sorts the data first.
+ *
+ * @todo Allow choice of weekly alignment day.
+ *
+ * @param int number. Default: 1
+ * @param timeperiods period. Default: week.
+ * @param bool align_week Default: false. If set to true, iterate on Sundays.
+ * @return New stockinfo object.
+ */
+stockinfo stockinfo::rollup(int number, timeperiods period, bool align_week) {
+	if (data.size() < 2) {
+		return *this;
+	}
+
+	// This only works if the data is in order. It does not necessarily have to be unique...
+	sort();
+
+	struct tm first;
+	localtime_r(&data[0].timestamp, &first);
+
+	boost::gregorian::date d(first.tm_year + 1900, first.tm_mon + 1, first.tm_mday);
+
+	if (align_week) {
+		BOOST_LOG_TRIVIAL(info) << "Boost Sunday alignment start: " << d;
+  	auto at_saturday   = boost::gregorian::greg_weekday(boost::gregorian::Sunday);
+  	d = next_weekday(d, at_saturday);
+		BOOST_LOG_TRIVIAL(info) << "Boost Sunday alignment finish: " << d;
+	}
+
+	boost::gregorian::day_iterator itr_day(d);
+	boost::gregorian::week_iterator itr_week(d);
+	boost::gregorian::month_iterator itr_month(d);
+	boost::gregorian::year_iterator itr_year(d);
+	stockinfo ret;
+
+	switch (period) {
+		case day:
+			ret = rollup_iterator(itr_day, number);
+			break;
+		case week:
+			ret = rollup_iterator(itr_week, number);
+			break;
+		case month:
+			ret = rollup_iterator(itr_month, number);
+			break;
+		case year:
+			ret = rollup_iterator(itr_year, number);
+			break;
+		default:
+			// TODO: Return default.
+			ret = *this;
+			break;
+	}
+
+	return ret;
+}
+
+stockinfo stockinfo::weekly(bool align_week) {
+	return rollup(1, week, align_week);
 }
 
 /**

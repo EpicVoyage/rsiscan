@@ -209,7 +209,7 @@ void read_args(int argc, char **argv)
 		else if (strcmp(argv[x], "--tails") == 0)
 			//find_tails = true;
 			// TODO: Check for 3-4 days?
-			script = "{bb_bottom} > {low} & {bb_bottom} < {close}";
+			script = "{bb_bottom} > {low} & {bb_bottom} < {open} & {bb_bottom} < {close}";
 		else if (strcmp(argv[x], "--narrow-bbands") == 0)
 			narrow_bbands = true;
 		else if (strcmp(argv[x], "--low52") == 0)

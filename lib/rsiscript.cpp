@@ -135,6 +135,7 @@ std::string rsiscript::replace_variables(const std::string &script, const stocki
 			// Parse the substring. Do not include the current parenthesis set.
 			repl = replace_variables(expr.substr(lparen_pos + 1, rparen_pos - lparen_pos - 1), data);
 			repl = variables(repl, data);
+			// TODO: Replace all instances of this same variable?
 			expr.replace(lparen_pos, rparen_pos - lparen_pos + 1, repl);
 
 			rparen_pos -= (rparen_pos - lparen_pos - repl.length());
@@ -149,13 +150,27 @@ std::string rsiscript::replace_variables(const std::string &script, const stocki
 /**
  * Parse script variables into values.
  *
+ * Format: high
+ * Format: rsi
+ * Format: high:52wk
+ * Format: rsi:52wk(28)
+ *
+ * @param string req The variable to process.
+ * @param stockinfo data The stock data to use in processing req.
  * @return string The script without any more variables.
  */
-std::string rsiscript::variables(const std::string &var, const stockinfo &data) {
+std::string rsiscript::variables(const std::string &req, const stockinfo &data) {
 	std::string ret = "0";
+	std::vector<std::string> tokens;
+
+	tokenize(req, tokens, ":", true);
+	BOOST_LOG_TRIVIAL(trace) << "Variable tokens: " << tokens.size();
 
 	// TODO: Parse options for stat variables. Weekly, monthly, RSI/SMA/EMA/BB/&c.
 
+
+	// Process the requested variable.
+	std::string var = tokens[0];
 	if (var.compare("open") == 0) {
 		ret = last_variable(var, data[0]->open);
 	}
@@ -416,4 +431,40 @@ std::string rsiscript::exec_script_calculate_operation(const T val1, const T val
 
 	// Force (double) for division.
 	return (operation == '/') ? std::to_string(res) : std::to_string(result);
+}
+
+/**
+ * Split a string.
+ *
+ * @link https://stackoverflow.com/a/1493195/850782
+ *
+ * @param string str
+ * @param tokens The return structure.
+ * @param string delimiters The characters to split for (default: " ").
+ * @param bool trimEmpty Should empty values be skipped (default: true)?
+ * @return None. Use tokens.
+ */
+template<class ContainerT>
+void rsiscript::tokenize(const std::string& str, ContainerT& tokens,
+				const std::string& delimiters, bool trimEmpty)
+{
+	std::string::size_type pos, lastPos = 0, length = str.length();
+
+	using value_type	= typename ContainerT::value_type;
+	using size_type		= typename ContainerT::size_type;
+
+	while(lastPos < length + 1)
+	{
+		pos = str.find_first_of(delimiters, lastPos);
+		if(pos == std::string::npos)
+		{
+			pos = length;
+		}
+
+		if(pos != lastPos || !trimEmpty)
+			tokens.push_back(value_type(str.data()+lastPos,
+					(size_type)pos-lastPos ));
+
+		lastPos = pos + 1;
+	}
 }
