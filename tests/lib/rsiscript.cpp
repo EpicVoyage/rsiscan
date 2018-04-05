@@ -40,3 +40,17 @@ TEST_CASE("Test variable replacement", "[script]") {
 	REQUIRE_THAT(rs.parse("{volume} > 1000000", si).c_str(), Equals("0"));
 	REQUIRE_THAT(rs.parse("{volume} > 100000", si).c_str(), Equals("1"));
 }
+
+TEST_CASE("Test period parsing", "[script]") {
+	std::string req;
+	int number;
+	timeperiods period;
+	rsiscript rs;
+
+	req = "5weeks";
+	rs.parse_period(req, number, period);
+
+	// Basic test.
+	REQUIRE(number == 5);
+	REQUIRE(period == week);
+}

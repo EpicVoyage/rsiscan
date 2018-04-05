@@ -10,6 +10,8 @@ public:
 	std::string parse(const char* const script, const stockinfo &data);
 	std::string last_variables;
 
+	void parse_period(const std::string req, int &number, timeperiods &period);
+
 private:
 	// Standard class functions.
 	std::string replace_variables(const std::string &script, const stockinfo &data);

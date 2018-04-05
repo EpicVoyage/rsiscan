@@ -1,6 +1,12 @@
+CMakeFiles
+cmake-build-debug
+CMakeCache.txt
+cmake_install.cmake
 tests/runall
+Project.cbp
 librsiscan.so
 rsiscan
 .DS_Store
+.idea
 *.o
 *~

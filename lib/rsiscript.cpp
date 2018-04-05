@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <regex>
 #include <algorithm>
 
 #include <boost/log/trivial.hpp>
@@ -134,6 +135,7 @@ std::string rsiscript::replace_variables(const std::string &script, const stocki
 
 			// Parse the substring. Do not include the current parenthesis set.
 			repl = replace_variables(expr.substr(lparen_pos + 1, rparen_pos - lparen_pos - 1), data);
+			BOOST_LOG_TRIVIAL(trace) << "Replacing: " << repl;
 			repl = variables(repl, data);
 			// TODO: Replace all instances of this same variable?
 			expr.replace(lparen_pos, rparen_pos - lparen_pos + 1, repl);
@@ -162,68 +164,115 @@ std::string rsiscript::replace_variables(const std::string &script, const stocki
 std::string rsiscript::variables(const std::string &req, const stockinfo &data) {
 	std::string ret = "0";
 	std::vector<std::string> tokens;
+	stockinfo *working_data = (stockinfo *)&data;
+	stockinfo week_data;
 
 	tokenize(req, tokens, ":", true);
 	BOOST_LOG_TRIVIAL(trace) << "Variable tokens: " << tokens.size();
 
 	// TODO: Parse options for stat variables. Weekly, monthly, RSI/SMA/EMA/BB/&c.
+	std::string period;
+	if (tokens.size() >= 2) {
+		period = tokens[1];
+	}
+	if (period.length()) {
+		int number;
+		timeperiods tp;
+		parse_period(period, number, tp);
 
+		week_data = working_data->rollup(number, tp);
+		working_data = &week_data;
+	}
+
+	if (!(*working_data).length()) {
+		return ret;
+	}
 
 	// Process the requested variable.
 	std::string var = tokens[0];
 	if (var.compare("open") == 0) {
-		ret = last_variable(var, data[0]->open);
+		ret = last_variable(req, (*working_data)[0]->open);
 	}
 	else if (var.compare("high") == 0) {
-		ret = last_variable(var, data[0]->high);
+		ret = last_variable(req, (*working_data)[0]->high);
 	}
 	else if (var.compare("low") == 0) {
-		ret = last_variable(var, data[0]->low);
+		ret = last_variable(req, (*working_data)[0]->low);
 	}
 	else if (var.compare("close") == 0) {
-		ret = last_variable(var, data[0]->close);
+		ret = last_variable(req, (*working_data)[0]->close);
 	}
 	else if (var.compare("volume") == 0) {
-		ret = last_variable(var, data[0]->volume);
+		ret = last_variable(req, (*working_data)[0]->volume);
 	}
 	else if (var.compare("rsi") == 0) {
 		relative_strength_index rsi;
-		double *rsi_data = rsi.generate(data, 14, data.length() - 26);
-		ret = last_variable(var, *rsi_data);
+		double *rsi_data = rsi.generate(*working_data, 14, (*working_data).length() - 26);
+		ret = last_variable(req, *rsi_data);
 		free(rsi_data);
 	}
 	else if (var.compare("sma") == 0) {
 		simple_moving_average sma;
-		double *sma_data = sma.generate(data, 20, data.length() - 26);
-		ret = last_variable(var, *sma_data);
+		double *sma_data = sma.generate(*working_data, 20, (*working_data).length() - 26);
+		ret = last_variable(req, *sma_data);
 		free(sma_data);
 	}
 	else if (var.compare("ema") == 0) {
 		simple_moving_average ema;
-		double *ema_data = ema.generate(data, 20, data.length() - 26);
-		ret = last_variable(var, *ema_data);
+		double *ema_data = ema.generate(*working_data, 20, (*working_data).length() - 26);
+		ret = last_variable(req, *ema_data);
 		free(ema_data);
 	}
 	else if (var.compare("bb_top") == 0) {
 		simple_moving_average sma;
 		bollinger bb;
-		double *sma_data = sma.generate(data, 20, data.length() - 26);
-		double *bb_data = bb.bands(data, 14, data.length() - 26);
-		ret = last_variable(var, *sma_data + *bb_data);
+		double *sma_data = sma.generate(*working_data, 20, (*working_data).length() - 26);
+		double *bb_data = bb.bands(*working_data, 14, (*working_data).length() - 26);
+		ret = last_variable(req, *sma_data + *bb_data);
 		free(sma_data);
 		free(bb_data);
 	}
 	else if (var.compare("bb_bottom") == 0) {
 		simple_moving_average sma;
 		bollinger bb;
-		double *sma_data = sma.generate(data, 20, data.length() - 26);
-		double *bb_data = bb.bands(data, 14, data.length() - 26);
-		ret = last_variable(var, *sma_data - *bb_data);
+		double *sma_data = sma.generate(*working_data, 20, (*working_data).length() - 26);
+		double *bb_data = bb.bands(*working_data, 14, (*working_data).length() - 26);
+		ret = last_variable(req, *sma_data - *bb_data);
 		free(sma_data);
 		free(bb_data);
 	}
 
 	return ret;
+}
+
+/**
+ * Parse a string like "52weeks" roughly into "52" and "week." It would have been nice to use regex for this, but the
+ * regex parser does not appear to work in this dev's compiler.
+ *
+ * @todo We could refactor this to place number & period into a struct.
+ *
+ * @param req String
+ * @param number Return value.
+ * @param period Return value.
+ */
+void rsiscript::parse_period(std::string req, int &number, timeperiods &period) {
+	std::istringstream i(req);
+	i >> number;
+
+	if (!number) {
+		number = 1;
+	}
+
+	if (req.compare("week"))
+		period = week;
+	else if (req.compare("month"))
+		period = month;
+	else if (req.compare("year"))
+		period = year;
+	else //if (req.compare("day"))
+		period = day;
+
+	return;
 }
 
 /**
@@ -261,6 +310,8 @@ std::string rsiscript::last_variable(const std::string &name, T value) {
  * Phase 3: + -
  * Phase 4: > < =
  * Phase 5: | &
+ *
+ * @todo >= <=
  *
  * @return string The value calculated.
  */

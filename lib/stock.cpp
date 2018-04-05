@@ -335,7 +335,7 @@ stockinfo stockinfo::rollup_iterator(T &iterator, int number) {
 		current_date = boost::gregorian::date(last.tm_year + 1900, last.tm_mon + 1, last.tm_mday);
 
 		// Is it time to switch to decrement the iterator?
-		if (iterator > current_date) {
+		if (iterator >= current_date) {
 			BOOST_LOG_TRIVIAL(info) << "Decrement iterator.";
 			multi_decrement(iterator, number);
 			init = true;
@@ -352,14 +352,19 @@ stockinfo stockinfo::rollup_iterator(T &iterator, int number) {
 			tmp.low = data[x].low;
 			tmp.close = data[x].close;
 			tmp.volume = data[x].volume;
+			BOOST_LOG_TRIVIAL(info) << "Set high: " << data[x].high << ", low: " << data[x].low << ", volume = " << data[x].volume;
 			init = false;
 		} else {
 			// Update the existing week.
-			if (data[x].high > tmp.high)
+			if (data[x].high > tmp.high) {
+				BOOST_LOG_TRIVIAL(info) << "Bumped high to: " << data[x].high;
 				tmp.high = data[x].high;
+			}
 			if (data[x].low < tmp.low) {
+				BOOST_LOG_TRIVIAL(info) << "Bumped low to: " << data[x].low;
 				tmp.low = data[x].low;
 			}
+			BOOST_LOG_TRIVIAL(info) << "Added volume: " << data[x].volume;
 			tmp.open = data[x].open;
 			tmp.volume += data[x].volume;
 		}

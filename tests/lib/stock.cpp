@@ -34,7 +34,6 @@ TEST_CASE("Load non-existant file", "[stockinfo,csv]") {
 
 TEST_CASE("Manually build the data", "[stockinfo]") {
 	stockinfo si;
-	bool success;
 	struct stock s, t, u, v;
 
 	// Create the first element.
@@ -70,9 +69,33 @@ TEST_CASE("Manually build the data", "[stockinfo]") {
 	REQUIRE(si[4] == nullptr);
 }
 
+TEST_CASE("Test assignment", "[stockinfo]") {
+	stockinfo si, sj, *pi, *pj;
+	struct stock s;
+
+	// Create the first element.
+	s.date = (char *)malloc(11);
+	strcpy(s.date, "10-10-2017");
+	s.volume = 2;
+	si.insert_at(s);
+
+	// Assignment
+	sj = si;
+	pi = &si;
+	pj = pi;
+
+	// Validate the data in our class.
+	REQUIRE(sj.length() == 1);
+	REQUIRE(sj[0]->volume == 2);
+	REQUIRE(sj[1] == nullptr);
+
+	REQUIRE(pj->length() == 1);
+	REQUIRE((*pj)[0]->volume == 2);
+	REQUIRE((*pj)[1] == nullptr);
+}
+
 TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 	stockinfo si, sj;
-	bool success;
 	struct stock s, t, u, v, w;
 
 	// Create the first element.
@@ -117,7 +140,7 @@ TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 
 	// Insert at the end by operator.
 	w.date = (char *)malloc(11);
-	strcpy(w.date, "2017-10-15");
+	strcpy(w.date, "2017-10-18");
 	w.open = 15;
 	w.high = 23;
 	w.low = 15;
@@ -140,5 +163,77 @@ TEST_CASE("Test weekly roll-ups", "[stockinfo]") {
 	REQUIRE(sj[1]->low == 1);
 	REQUIRE(sj[1]->close == 3);
 	REQUIRE(sj[1]->volume == 10);
+	REQUIRE(sj[2] == nullptr);
+}
+
+TEST_CASE("Test 4-week roll-ups", "[stockinfo]") {
+	stockinfo si, sj;
+	struct stock s, t, u, v, w;
+
+	// Create the first element.
+	s.date = (char *)malloc(11);
+	strcpy(s.date, "2017-09-01");
+	s.open = 2;
+	s.high = 4;
+	s.low = 2;
+	s.close = 3;
+	s.volume = 2;
+	si.insert_at(s);
+
+	// Insert at the beginning.
+	t.date = (char *)malloc(11);
+	strcpy(t.date, "2017-09-02");
+	t.open = 4;
+	t.high = 6;
+	t.low = 3;
+	t.close = 4;
+	t.volume = 1;
+	si.insert_at(t);
+
+	// Manually insert at the end.
+	u.date = (char *)malloc(11);
+	strcpy(u.date, "2017-09-03");
+	u.open = 3;
+	u.high = 7;
+	u.low = 3;
+	u.close = 3;
+	u.volume = 3;
+	si.insert_at(u, 2);
+
+	// Insert at the end by operator.
+	v.date = (char *)malloc(11);
+	strcpy(v.date, "2017-09-29");
+	v.open = 2;
+	v.high = 3;
+	v.low = 1;
+	v.close = 3;
+	v.volume = 4;
+	si += v;
+
+	// Insert at the end by operator.
+	w.date = (char *)malloc(11);
+	strcpy(w.date, "2017-09-30");
+	w.open = 15;
+	w.high = 23;
+	w.low = 15;
+	w.close = 23;
+	w.volume = 5;
+	si += w;
+
+	// Test = operator and weekly roll-up.
+	sj = si.rollup(4, week, true);
+
+	// Validate the data in our class.
+	REQUIRE(sj.length() == 2);
+	REQUIRE(sj[0]->open == 2);
+	REQUIRE(sj[0]->high == 23);
+	REQUIRE(sj[0]->low == 1);
+	REQUIRE(sj[0]->close == 23);
+	REQUIRE(sj[0]->volume == 9);
+	REQUIRE(sj[1]->open == 2);
+	REQUIRE(sj[1]->high == 7);
+	REQUIRE(sj[1]->low == 2);
+	REQUIRE(sj[1]->close == 3);
+	REQUIRE(sj[1]->volume == 6);
 	REQUIRE(sj[2] == nullptr);
 }
